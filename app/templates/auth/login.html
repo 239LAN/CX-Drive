@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}登录 - 创想云盘{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-5 col-lg-4">
+        <div class="card mt-5">
+            <div class="card-body p-4">
+                <h4 class="text-center mb-4"><i class="bi bi-cloud-fill text-primary"></i> 登录创想云盘</h4>
+                <form method="post">
+                    <div class="mb-3">
+                        <label class="form-label">用户名</label>
+                        <input type="text" class="form-control" name="username" required autofocus>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">密码</label>
+                        <input type="password" class="form-control" name="password" required>
+                    </div>
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" name="remember" id="remember">
+                        <label class="form-check-label" for="remember">记住我</label>
+                    </div>
+                    <button class="btn btn-primary w-100">登录</button>
+                </form>
+                <p class="text-center mt-3 mb-0">还没有账号？<a href="{{ url_for('auth.register') }}">立即注册</a></p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

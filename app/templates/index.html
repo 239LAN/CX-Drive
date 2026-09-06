@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}创想云盘 - 安全便捷的私有云存储{% endblock %}
+{% block content %}
+
+<!-- Hero -->
+<div class="text-center py-5">
+    <div class="display-1 text-primary mb-3"><i class="bi bi-cloud-fill"></i></div>
+    <h1 class="display-5 fw-bold mb-3">创想云盘</h1>
+    <p class="lead text-muted mx-auto" style="max-width: 620px">
+        安全、便捷的私有云存储服务。随时随地管理你的文件，一键分享给朋友与同事，
+        让数据触手可及。
+    </p>
+    <div class="mt-4">
+        <a href="{{ url_for('auth.login') }}" class="btn btn-primary btn-lg px-4 me-2">
+            <i class="bi bi-box-arrow-in-right"></i> 立即登录
+        </a>
+        <a href="{{ url_for('auth.register') }}" class="btn btn-outline-primary btn-lg px-4">
+            <i class="bi bi-person-plus"></i> 免费注册
+        </a>
+    </div>
+</div>
+
+<!-- 核心功能 -->
+<div class="row g-4 my-4">
+    <div class="col-md-4">
+        <div class="card h-100 text-center">
+            <div class="card-body p-4">
+                <div class="display-6 text-primary mb-3"><i class="bi bi-folder2-open"></i></div>
+                <h5>文件管理</h5>
+                <p class="text-muted mb-0">文件夹分类、拖拽上传、搜索排序、批量操作，支持大文件分片上传与秒传，整理文件得心应手。</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100 text-center">
+            <div class="card-body p-4">
+                <div class="display-6 text-primary mb-3"><i class="bi bi-share"></i></div>
+                <h5>一键分享</h5>
+                <p class="text-muted mb-0">生成分享外链，可设提取密码、有效期与下载次数限制，访客无需登录即可预览与下载。</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100 text-center">
+            <div class="card-body p-4">
+                <div class="display-6 text-primary mb-3"><i class="bi bi-shield-check"></i></div>
+                <h5>安全放心</h5>
+                <p class="text-muted mb-0">账号密码加密存储，回收站防止误删，下载限速与流量配额保护服务稳定，数据牢牢掌握在自己手中。</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 使用步骤 -->
+<div class="card my-4">
+    <div class="card-body p-4">
+        <h5 class="mb-4 text-center">三步开始使用</h5>
+        <div class="row text-center">
+            <div class="col-md-4">
+                <div class="badge bg-primary rounded-circle p-3 fs-6 mb-2">1</div>
+                <p class="mb-1 fw-bold">注册账号</p>
+                <p class="text-muted small mb-0">填写用户名与邮箱，几秒钟完成注册</p>
+            </div>
+            <div class="col-md-4">
+                <div class="badge bg-primary rounded-circle p-3 fs-6 mb-2">2</div>
+                <p class="mb-1 fw-bold">上传文件</p>
+                <p class="text-muted small mb-0">登录后即可上传并整理你的资料</p>
+            </div>
+            <div class="col-md-4">
+                <div class="badge bg-primary rounded-circle p-3 fs-6 mb-2">3</div>
+                <p class="mb-1 fw-bold">分享协作</p>
+                <p class="text-muted small mb-0">一键生成外链，发给任何人即可下载</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
