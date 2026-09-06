@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # ============================================================
-# 创想云盘 Ubuntu 安装 / 覆盖更新脚本
+# CX-Drive 创想云盘 Ubuntu 安装 / 覆盖更新脚本模板
 #
 # 用法（需 root 或 sudo）：
-#   sudo bash cloudpan-install.sh            # 单文件安装包（内嵌完整源码）
-#   sudo bash install.sh                     # 源码即脚本所在目录
-#   sudo bash install.sh /path/to/源码目录
-#   sudo bash install.sh /path/to/app.tar.gz # 源码压缩包
+#   sudo bash install.sh                   # 单文件安装包（内嵌完整源码）
+#   sudo bash install-template.sh          # 模板与源码同目录时直接执行
+#   sudo bash install-template.sh /path/to/源码目录
+#   sudo bash install-template.sh /path/to/app.tar.gz # 源码压缩包
+#
+# 说明：
+#   本文件是「安装脚本模板」。运行 build_install.py 会把整个项目
+#   源码内嵌到本文件尾部的负载区，生成单文件安装包 install.sh，
+#   在目标 Ubuntu 机器上单独拷贝 install.sh 执行即可完成部署。
 #
 # 特性：
 #   - 全新安装：部署全部文件、创建虚拟环境、安装依赖、写入 .env 密钥、
@@ -131,7 +136,7 @@ echo ">> 安装/更新 Python 依赖"
 echo ">> 注册 systemd 服务 $SERVICE"
 cat > "/etc/systemd/system/${SERVICE}" <<EOF
 [Unit]
-Description=创想云盘 (CloudPan) Web 服务
+Description=CX-Drive (创想云盘) Web Service
 After=network.target
 
 [Service]
