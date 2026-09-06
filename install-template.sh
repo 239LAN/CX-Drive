@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# CX-Drive 创想云盘 Ubuntu 安装 / 覆盖更新脚本模板
+# CX-Drive 创想云盘 Linux 安装 / 覆盖更新脚本模板
 #
 # 用法（需 root 或 sudo）：
 #   sudo bash install.sh                   # 单文件安装包（内嵌完整源码）
@@ -80,12 +80,34 @@ echo "===== 创想云盘部署：${MODE} ====="
 echo "源码目录: $SRC"
 echo "安装目录: $INSTALL_DIR"
 
-# ---------- 系统依赖 ----------
+# ---------- 系统依赖（兼容主流 Linux 发行版） ----------
+# 支持的包管理器：apt(Debian/Ubuntu) / dnf、yum(RHEL/CentOS/Fedora/Alma/Rocky)
+#                / pacman(Arch) / zypper(openSUSE)。Alpine(apk, OpenRC) 不支持。
+install_sys_pkgs() {
+    if command -v apt-get >/dev/null 2>&1; then
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq
+        apt-get install -y -qq --no-install-recommends \
+            python3 python3-venv python3-pip rsync
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y python3 python3-pip rsync
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y python3 python3-pip rsync
+    elif command -v pacman >/dev/null 2>&1; then
+        pacman -Sy --noconfirm python python-pip rsync
+    elif command -v zypper >/dev/null 2>&1; then
+        zypper --non-interactive install python3 python3-pip rsync
+    elif command -v apk >/dev/null 2>&1; then
+        echo "错误：Alpine(apk) 使用 OpenRC 而非 systemd，本脚本暂不支持。" >&2
+        echo "      请使用 Debian/Ubuntu、RHEL/CentOS/Fedora、Arch、openSUSE 等发行版。" >&2
+        exit 1
+    else
+        echo "错误：未识别的包管理器，无法自动安装依赖。" >&2
+        exit 1
+    fi
+}
 echo ">> 安装系统依赖（python3 / venv / pip / rsync）"
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq --no-install-recommends \
-    python3 python3-venv python3-pip rsync
+install_sys_pkgs
 
 # ---------- 运行用户与数据目录 ----------
 if ! id -u "$RUN_USER" &>/dev/null; then

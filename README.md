@@ -1,6 +1,6 @@
 # CX-Drive · 创想云盘
 
-CX-Drive（创想云盘）是一个开箱即用、可私有部署的轻量网盘系统。基于 Flask，支持文件管理、分享外链、回收站、会员套餐与管理员后台，一条命令即可在 Ubuntu 服务器上完成部署或覆盖更新。
+CX-Drive（创想云盘）是一个开箱即用、可私有部署的轻量网盘系统。基于 Flask，支持文件管理、分享外链、回收站、会员套餐与管理员后台，一条命令即可在主流 Linux 服务器上完成部署或覆盖更新。
 
 ## 功能特性
 
@@ -52,7 +52,18 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 python app.py            # 浏览器打开 http://127.0.0.1:5000
 ```
 
-## 部署到 Ubuntu
+## 部署到 Linux（systemd 发行版）
+
+支持自动识别包管理器并安装依赖，覆盖以下主流发行版：
+
+| 发行版 | 包管理器 | 系统依赖 |
+| --- | --- | --- |
+| Debian / Ubuntu | apt | python3 + venv + pip + rsync |
+| RHEL / CentOS Stream / AlmaLinux / Rocky / Fedora | dnf（旧版 yum） | python3 + pip + rsync |
+| Arch Linux | pacman | python + pip + rsync |
+| openSUSE | zypper | python3 + pip + rsync |
+
+> Alpine（apk / OpenRC）暂不支持——脚本依赖 systemd 托管服务；若必须使用，可手动改用 rc-service 或容器方式。
 
 ### 方式一：单文件安装包（推荐）
 

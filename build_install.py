@@ -91,7 +91,7 @@ def main():
 
     size_mb = os.path.getsize(args.output) / 1024 / 1024
     print(f"已生成: {args.output} ({size_mb:.2f} MB, 负载 {len(payload) / 1024:.0f} KB)")
-    print("Ubuntu 上执行:  sudo bash %s" % os.path.basename(args.output))
+    print("Linux 上执行:  sudo bash %s" % os.path.basename(args.output))
 
 
 if __name__ == "__main__":
