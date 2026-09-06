@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}套餐管理 - 创想云盘{% endblock %}
+{% block content %}
+<h4 class="mb-3"><i class="bi bi-tags"></i> 套餐管理
+    <a href="{{ url_for('admin.index') }}" class="btn btn-sm btn-outline-secondary ms-2">← 返回</a>
+    <button class="btn btn-sm btn-success" data-bs-toggle="modal" data-bs-target="#planModal" onclick="openPlanEdit(null)">＋ 新建套餐</button>
+</h4>
+
+<div class="card">
+    <div class="card-body p-0">
+        <table class="table table-sm table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>ID</th><th>标识</th><th>名称</th><th>价格/月</th><th>容量</th>
+                    <th>单文件上限</th><th>限速</th><th>月流量</th><th>预览</th><th>排序</th><th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in plans %}
+                <tr>
+                    <td>{{ p.id }}</td>
+                    <td><code>{{ p.name }}</code></td>
+                    <td>{{ p.display_name }}</td>
+                    <td>¥{{ p.monthly_price }}</td>
+                    <td>{{ p.storage_quota_bytes|human_size }}</td>
+                    <td>{{ p.max_file_size_bytes|human_size if p.max_file_size_bytes else '不限' }}</td>
+                    <td>{{ p.speed_limit_bps|human_speed if p.speed_limit_bps else '不限' }}</td>
+                    <td>{{ p.monthly_traffic_bytes|human_size if p.monthly_traffic_bytes else '不限' }}</td>
+                    <td>{{ '是' if p.allow_preview else '否' }}</td>
+                    <td>{{ p.sort }}</td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#planModal"
+                                onclick="openPlanEdit(this)"
+                                data-id="{{ p.id }}" data-free="{{ 1 if p.name=='free' else 0 }}"
+                                data-name="{{ p.name }}" data-dname="{{ p.display_name }}"
+                                data-price="{{ p.monthly_price }}"
+                                data-storage="{{ (p.storage_quota_bytes / 1024**3)|round(2) }}"
+                                data-maxmb="{{ (p.max_file_size_bytes / 1024**2)|round(0)|int if p.max_file_size_bytes else 0 }}"
+                                data-speed="{{ (p.speed_limit_bps / 1024**2)|round(2) if p.speed_limit_bps else 0 }}"
+                                data-traffic="{{ (p.monthly_traffic_bytes / 1024**3)|round(2) if p.monthly_traffic_bytes else 0 }}"
+                                data-preview="{{ 1 if p.allow_preview else 0 }}" data-sort="{{ p.sort }}">编辑</button>
+                        {% if p.name != 'free' %}
+                        <form method="post" action="{{ url_for('admin.plan_delete', plan_id=p.id) }}" class="d-inline" onsubmit="return confirm('确定删除该套餐？')">
+                            <button class="btn btn-sm btn-outline-danger">删除</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- 套餐编辑弹窗 -->
+<div class="modal fade" id="planModal" tabindex="-1">
+    <div class="modal-dialog modal-lg"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">套餐信息</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+        <form method="post" action="{{ url_for('admin.plan_save') }}">
+            <div class="modal-body row g-3">
+                <input type="hidden" name="plan_id" id="f_plan_id">
+                <div class="col-md-4"><label class="form-label">内部标识（英文小写）</label>
+                    <input type="text" name="name" id="f_name" class="form-control" required></div>
+                <div class="col-md-4"><label class="form-label">展示名称</label>
+                    <input type="text" name="display_name" id="f_dname" class="form-control" required></div>
+                <div class="col-md-4"><label class="form-label">月价格（元）</label>
+                    <input type="number" step="0.01" min="0" name="monthly_price" id="f_price" class="form-control" required></div>
+                <div class="col-md-4"><label class="form-label">容量（GB）</label>
+                    <input type="number" step="0.01" min="0.1" name="storage_gb" id="f_storage" class="form-control" required></div>
+                <div class="col-md-4"><label class="form-label">单文件上限（MB，0=不限）</label>
+                    <input type="number" step="0.1" min="0" name="max_file_mb" id="f_maxmb" class="form-control"></div>
+                <div class="col-md-4"><label class="form-label">下载限速（MB/s，0=不限）</label>
+                    <input type="number" step="0.1" min="0" name="speed_mbps" id="f_speed" class="form-control"></div>
+                <div class="col-md-4"><label class="form-label">月流量（GB，0=不限）</label>
+                    <input type="number" step="0.01" min="0" name="traffic_gb" id="f_traffic" class="form-control"></div>
+                <div class="col-md-4"><label class="form-label">排序（小在前）</label>
+                    <input type="number" name="sort" id="f_sort" class="form-control" value="0"></div>
+                <div class="col-md-4 d-flex align-items-end">
+                    <div class="form-check"><input type="checkbox" name="allow_preview" class="form-check-input" id="f_preview">
+                        <label class="form-check-label" for="f_preview">允许在线预览</label></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+                <button class="btn btn-primary">保存</button>
+            </div>
+        </form>
+    </div></div>
+</div>
+
+<script>
+function openPlanEdit(el) {
+    const f = id => document.getElementById(id);
+    // el 为 null 表示新建
+    if (!el) {
+        f('f_plan_id').value = '';
+        ['f_name','f_dname','f_storage','f_maxmb','f_speed','f_traffic'].forEach(x => f(x).value = '');
+        f('f_price').value = '0';
+        f('f_sort').value = '0';
+        f('f_preview').checked = false;
+        f('f_name').disabled = false;
+        return;
+    }
+    const d = el.dataset;
+    f('f_plan_id').value = d.id;
+    f('f_name').value = d.name;
+    f('f_name').disabled = d.free === '1';
+    f('f_dname').value = d.dname;
+    f('f_price').value = d.price;
+    f('f_storage').value = d.storage;
+    f('f_maxmb').value = d.maxmb;
+    f('f_speed').value = d.speed;
+    f('f_traffic').value = d.traffic;
+    f('f_preview').checked = d.preview === '1';
+    f('f_sort').value = d.sort;
+}
+</script>
+{% endblock %}
