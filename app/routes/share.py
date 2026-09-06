@@ -228,6 +228,9 @@ def _build_crumbs(folder: File, root: File):
     return crumbs
 
 
+ANON_SPEED_LIMIT = 1 * 1024 * 1024  # 未登录访客下载限速 1 MiB/s
+
+
 def _send_file(link: ShareLink, f: File):
     import os
     from app.services import file_service
@@ -236,7 +239,28 @@ def _send_file(link: ShareLink, f: File):
         abort(404, "文件实体丢失")
     link.download_count += 1
     db.session.commit()
-    return send_file(path, as_attachment=True, download_name=f.name)
+    if current_user.is_authenticated:
+        return send_file(path, as_attachment=True, download_name=f.name)
+    return _stream_limited(path, f.name, f.size)
+
+
+def _stream_limited(path: str, download_name: str, size: int):
+    """未登录访客下载：按 1 MiB/s 流式限速"""
+    def generate():
+        chunk = 256 * 1024
+        with open(path, "rb") as fh:
+            while True:
+                data = fh.read(chunk)
+                if not data:
+                    break
+                yield data
+                time.sleep(len(data) / ANON_SPEED_LIMIT)
+
+    from urllib.parse import quote
+    resp = Response(generate(), direct_passthrough=True)
+    resp.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{quote(download_name)}"
+    resp.headers["Content-Length"] = str(size)
+    return resp
 
 
 @share_bp.route("/share/<int:link_id>/cancel", methods=["POST"])
