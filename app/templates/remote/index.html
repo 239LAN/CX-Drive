@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}远程下载 - 创想云盘{% endblock %}
+{% block content %}
+
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <h5 class="mb-0"><i class="bi bi-cloud-arrow-down"></i> 远程下载</h5>
+            <span class="text-muted small">并发配额：{{ running }}/{{ limit }}（免费版 1，VIP 3，SVIP 5）</span>
+            <button class="btn btn-primary ms-auto" data-bs-toggle="modal" data-bs-target="#remoteModal">
+                <i class="bi bi-plus-lg"></i> 新建任务
+            </button>
+        </div>
+        <p class="small text-muted mt-2 mb-0">
+            输入文件直链后由服务器下载到网盘。单任务最长 1 小时；若连续 1 分钟未下载到新数据将自动判定超时。
+            下载内容受当前容量、单文件大小与月流量额度共同约束，超限自动中止。
+        </p>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>文件名</th>
+                    <th class="d-none d-md-table-cell">下载地址</th>
+                    <th style="width:180px">进度</th>
+                    <th style="width:110px">状态</th>
+                    <th style="width:140px">创建时间</th>
+                    <th style="width:90px">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in tasks %}
+                <tr>
+                    <td>
+                        {% if t.status == 'done' and t.file_id %}
+                        <a href="{{ url_for('files.download', file_id=t.file_id) }}"><i class="bi bi-file-earmark me-1"></i>{{ t.filename }}</a>
+                        {% else %}<i class="bi bi-file-earmark me-1"></i>{{ t.filename }}{% endif %}
+                        {% if t.error %}<div class="small text-danger mt-1">{{ t.error }}</div>{% endif %}
+                    </td>
+                    <td class="d-none d-md-table-cell small text-muted" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                        title="{{ t.url }}">{{ t.url }}</td>
+                    <td>
+                        {% if t.status in ('downloading', 'done') %}
+                        {% if t.total_size %}
+                        <div class="progress" style="height:6px"><div class="progress-bar" style="width:{{ (t.downloaded_bytes * 100 // t.total_size) if t.total_size else 0 }}%"></div></div>
+                        <span class="small text-muted">{{ t.downloaded_bytes|human_size }} / {{ t.total_size|human_size }}</span>
+                        {% else %}
+                        <span class="small text-muted">{{ t.downloaded_bytes|human_size }}{% if t.status=='downloading' %}（大小未知）{% endif %}</span>
+                        {% endif %}
+                        {% else %}<span class="text-muted">-</span>{% endif %}
+                    </td>
+                    <td>
+                        {% set badge = {'queued':'secondary','downloading':'primary','done':'success','failed':'danger','canceled':'warning'}[t.status] %}
+                        <span class="badge bg-{{ badge }}">
+                            {{ {'queued':'排队中','downloading':'下载中','done':'已完成','failed':'失败','canceled':'已取消'}[t.status] }}
+                        </span>
+                    </td>
+                    <td class="small text-muted">{{ t.created_at.strftime('%m-%d %H:%M') }}</td>
+                    <td>
+                        {% if t.status in ('queued', 'downloading') %}
+                        <form method="post" action="{{ url_for('remote.cancel', task_id=t.id) }}" class="d-inline">
+                            <button class="btn btn-sm btn-outline-warning" title="取消"><i class="bi bi-x-circle"></i></button>
+                        </form>
+                        {% else %}
+                        <form method="post" action="{{ url_for('remote.delete', task_id=t.id) }}" class="d-inline"
+                              onsubmit="return confirm('删除该任务记录？')">
+                            <button class="btn btn-sm btn-outline-danger" title="删除记录"><i class="bi bi-trash"></i></button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6" class="text-center text-muted py-5">暂无远程下载任务</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- 新建任务弹窗 -->
+<div class="modal fade" id="remoteModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">新建远程下载</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+        <form method="post" action="{{ url_for('remote.create') }}">
+            <div class="modal-body">
+                <div class="mb-3"><label class="form-label">下载地址（http/https 直链）</label>
+                    <input type="url" name="url" class="form-control" placeholder="https://example.com/file.zip" required></div>
+                <div class="mb-3"><label class="form-label">保存文件名（可选，默认取 URL 末段）</label>
+                    <input type="text" name="filename" class="form-control" placeholder="留空自动识别"></div>
+                <div class="mb-3"><label class="form-label">保存位置</label>
+                    <input type="text" name="parent_id" class="form-control d-none" value="">
+                    <div class="form-text">远程任务默认保存到“我的文件”根目录。</div>
+                </div>
+            </div>
+            <div class="modal-footer"><button class="btn btn-primary">创建任务</button></div>
+        </form>
+    </div></div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// 页面轮询刷新：存在排队/下载中的任务时每 5 秒自动刷新
+(function () {
+    const busy = document.querySelectorAll('.badge.bg-primary, .badge.bg-secondary');
+    if (busy.length && !sessionStorage.getItem('remote-stop')) {
+        setTimeout(() => location.reload(), 5000);
+    }
+})();
+</script>
+{% endblock %}

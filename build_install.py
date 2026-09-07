@@ -1,10 +1,8 @@
 # -*- coding: utf-8 -*-
 """生成单文件安装包 install.sh
 
-该生成器把整个项目（除数据/密钥/开发残留）打包为 gzip tar，
-base64 编码后内嵌到 install-template.sh 的负载区，输出 install.sh。
-生成的单文件脚本在 Ubuntu 上执行即可完成全新安装或覆盖更新，
-无需另外上传源码。
+将项目源码打包为 gzip tar，base64 编码后内嵌至 install-template.sh 的负载区，
+输出在 Linux（systemd 发行版）上可直接执行的单文件安装脚本。
 
 用法:
     python build_install.py               # 输出 install.sh
@@ -25,11 +23,12 @@ DEFAULT_OUT = os.path.join(BASE, "install.sh")
 BEGIN = "# CLOUDPAN_PAYLOAD_BEGIN"
 END = "# CLOUDPAN_PAYLOAD_END"
 
-# 与 install-template.sh 的 rsync 排除保持一致：数据/密钥/环境/开发残留不打包
+# 排除项与 install-template.sh 的 rsync 规则一致：数据/密钥/环境/开发残留不打包
 EXCLUDE_DIRS = {".git", "__pycache__", "venv", ".venv", "instance", "storage",
-                "uploads", ".pytest_cache", "_smoke_tmp"}
+                "uploads", ".pytest_cache", "_smoke_tmp", "_chk_tmp", "_rt_tmp"}
 EXCLUDE_FILES = {".gitignore", ".env", "install.sh", "install-template.sh",
-                 "cloudpan-install.sh", "build_install.py", "_smoke_run.py"}
+                 "cloudpan-install.sh", "build_install.py",
+                 "_smoke_run.py", "_chk_new.py", "_rt_check.py", "_pyc_probe.py"}
 EXCLUDE_PATTERNS = ("*.pyc", "*.db", "*.log")
 
 
@@ -52,14 +51,13 @@ def build_payload() -> bytes:
                     continue
                 tf.add(fp, arcname=rel.replace(os.sep, "/"))
     data = buf.getvalue()
-    # base64 按 76 字符换行，避免超长单行影响编辑器与行尾处理
+    # base64 每 76 字符换行
     encoded = base64.encodebytes(data).decode("ascii").rstrip("\n")
     return encoded.encode("utf-8")
 
 
 def inject_payload(template: str, payload: bytes) -> str:
-    """把 base64 负载注入到末尾标记行（仅匹配整行恰为 BEGIN 的行，
-    避免误命中脚本中 grep/sed 引号内的同名子串）。"""
+    """在 BEGIN 标记行后注入 base64 负载（仅匹配整行恰为 BEGIN 的行）"""
     lines = template.splitlines(keepends=True)
     out = []
     done = False

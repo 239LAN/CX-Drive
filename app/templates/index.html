@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% block title %}创想云盘 - 安全便捷的私有云存储{% endblock %}
+
+{% block extra_head %}
+<script>document.documentElement.classList.add("js");</script>
+<style>
+    /* ---- 滚动逐屏淡入渐显（无 JS 时内容直接可见） ---- */
+    .js .reveal {
+        opacity: 0;
+        transform: translateY(30px);
+        transition: opacity .8s cubic-bezier(.22, .61, .36, 1),
+                    transform .8s cubic-bezier(.22, .61, .36, 1);
+        transition-delay: var(--d, 0s);
+        will-change: opacity, transform;
+    }
+    .js .reveal.in { opacity: 1; transform: none; }
+    @media (prefers-reduced-motion: reduce) {
+        .js .reveal { opacity: 1 !important; transform: none !important; transition: none !important; }
+    }
+
+    /* ---- 主页视觉 ---- */
+    .home-hero {
+        position: relative;
+        overflow: hidden;
+        background: linear-gradient(135deg, #2b6bff 0%, #6d5cff 55%, #a450ff 100%);
+    }
+    .home-hero .glow {
+        position: absolute;
+        border-radius: 50%;
+        pointer-events: none;
+        opacity: .3;
+        filter: blur(4px);
+    }
+    .home-hero .content { position: relative; z-index: 1; }
+    .hero-chip {
+        background: rgba(255, 255, 255, .18);
+        border: 1px solid rgba(255, 255, 255, .35);
+        backdrop-filter: blur(2px);
+    }
+
+    .icon-chip {
+        width: 58px; height: 58px;
+        display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 18px; font-size: 1.55rem;
+    }
+    .chip-blue   { background: #e7f0ff; color: #2b6bff; }
+    .chip-purple { background: #f1ebff; color: #7c3aed; }
+    .chip-green  { background: #e2f7ec; color: #0ea968; }
+
+    .card-hover { transition: transform .25s ease, box-shadow .25s ease; }
+    .card-hover:hover { transform: translateY(-6px); box-shadow: 0 14px 28px rgba(43, 107, 255, .13); }
+
+    .eyebrow { letter-spacing: .16em; }
+    .text-grad {
+        background: linear-gradient(90deg, #2b6bff, #a450ff);
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+
+    .step-num {
+        width: 46px; height: 46px;
+        display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 50%;
+        background: linear-gradient(135deg, #2b6bff, #7c3aed);
+        color: #fff; font-weight: 700; font-size: 1.1rem;
+        box-shadow: 0 8px 16px rgba(43, 107, 255, .3);
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- ============ ① Hero：整屏首屏 ============ -->
+<div class="reveal home-hero rounded-4 text-white text-center px-3 py-5 mb-5">
+    <span class="glow" style="width:340px;height:340px;background:#7dd3fc;top:-130px;right:-70px;"></span>
+    <span class="glow" style="width:280px;height:280px;background:#c4b5fd;bottom:-110px;left:-50px;"></span>
+    <div class="content py-lg-4">
+        <div class="display-1 mb-3" style="font-size:3.4rem"><i class="bi bi-cloud-fill"></i></div>
+        <h1 class="display-5 fw-bold mb-1">CX-Drive</h1>
+        <h2 class="h5 text-white-50 mb-3">创想云盘 · 你的数据自己做主</h2>
+        <p class="lead mx-auto mb-4" style="max-width:640px">
+            安全、便捷的私有云存储服务。随时随地管理文件，一键分享给朋友与同事，
+            让数据触手可及。
+        </p>
+        <div class="mb-4">
+            <a href="{{ url_for('auth.login') }}" class="btn btn-light btn-lg px-4 me-2">
+                <i class="bi bi-box-arrow-in-right"></i> 立即登录
+            </a>
+            <a href="{{ url_for('auth.register') }}" class="btn btn-outline-light btn-lg px-4">
+                <i class="bi bi-person-plus"></i> 免费注册
+            </a>
+        </div>
+        <div class="d-flex flex-wrap justify-content-center gap-2 small">
+            <span class="badge rounded-pill hero-chip py-2 px-3"><i class="bi bi-share me-1"></i>分享外链</span>
+            <span class="badge rounded-pill hero-chip py-2 px-3"><i class="bi bi-cloud-arrow-down me-1"></i>远程下载</span>
+            <span class="badge rounded-pill hero-chip py-2 px-3"><i class="bi bi-stars me-1"></i>VIP 会员</span>
+            <span class="badge rounded-pill hero-chip py-2 px-3"><i class="bi bi-recycle me-1"></i>回收站保护</span>
+        </div>
+    </div>
+</div>
+
+<!-- ============ ② 核心功能 ============ -->
+<div class="text-center mb-4 reveal">
+    <span class="eyebrow small fw-bold text-primary">核心功能</span>
+    <h3 class="fw-bold mt-1 mb-0">让文件管理更简单</h3>
+</div>
+<div class="row g-4 mb-5">
+    <div class="col-md-4 reveal" style="--d:.05s">
+        <div class="card h-100 card-hover text-center">
+            <div class="card-body p-4">
+                <div class="icon-chip chip-blue mb-3"><i class="bi bi-folder2-open"></i></div>
+                <h5 class="fw-bold">文件管理</h5>
+                <p class="text-muted mb-0">文件夹分类、拖拽上传、搜索排序、批量操作，支持大文件分片上传与秒传，整理文件得心应手。</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4 reveal" style="--d:.15s">
+        <div class="card h-100 card-hover text-center">
+            <div class="card-body p-4">
+                <div class="icon-chip chip-purple mb-3"><i class="bi bi-share"></i></div>
+                <h5 class="fw-bold">一键分享</h5>
+                <p class="text-muted mb-0">生成分享外链，可设提取密码、有效期与下载次数限制，访客无需登录即可预览与下载。</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4 reveal" style="--d:.25s">
+        <div class="card h-100 card-hover text-center">
+            <div class="card-body p-4">
+                <div class="icon-chip chip-green mb-3"><i class="bi bi-shield-check"></i></div>
+                <h5 class="fw-bold">安全放心</h5>
+                <p class="text-muted mb-0">账号密码加密存储，回收站防止误删，下载限速与流量配额保护服务稳定，数据牢牢掌握在自己手中。</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ ③ 三步开始使用 ============ -->
+<div class="card border-0 shadow-sm mb-5 reveal">
+    <div class="card-body p-4 p-lg-5">
+        <div class="text-center mb-4">
+            <span class="eyebrow small fw-bold text-primary">快速上手</span>
+            <h4 class="fw-bold mt-1 mb-0">三步开始使用</h4>
+        </div>
+        <div class="row text-center g-4">
+            <div class="col-md-4 reveal" style="--d:.05s">
+                <div class="step-num mb-2">1</div>
+                <p class="mb-1 fw-bold">注册账号</p>
+                <p class="text-muted small mb-0">填写用户名与邮箱，几秒钟完成注册</p>
+            </div>
+            <div class="col-md-4 reveal" style="--d:.15s">
+                <div class="step-num mb-2 mx-auto">2</div>
+                <p class="mb-1 fw-bold">上传文件</p>
+                <p class="text-muted small mb-0">登录后即可上传并整理你的资料</p>
+            </div>
+            <div class="col-md-4 reveal" style="--d:.25s">
+                <div class="step-num mb-2 mx-auto">3</div>
+                <p class="mb-1 fw-bold">分享协作</p>
+                <p class="text-muted small mb-0">一键生成外链，发给任何人即可下载</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ ④ 底部号召 ============ -->
+<div class="reveal home-hero rounded-4 text-center text-white px-3 py-5">
+    <span class="glow" style="width:300px;height:300px;background:#7dd3fc;top:-120px;left:-60px;"></span>
+    <span class="glow" style="width:240px;height:240px;background:#c4b5fd;bottom:-100px;right:-40px;"></span>
+    <div class="content">
+        <h3 class="fw-bold mb-2">现在就拥有你的私有云盘</h3>
+        <p class="text-white-50 mb-4">无需等待，注册即可开始免费体验</p>
+        <a href="{{ url_for('auth.register') }}" class="btn btn-light btn-lg px-4 me-2">
+            <i class="bi bi-rocket-takeoff"></i> 免费开始使用
+        </a>
+        <a href="{{ url_for('auth.login') }}" class="btn btn-outline-light btn-lg px-4">
+            <i class="bi bi-box-arrow-in-right"></i> 登录
+        </a>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    const els = document.querySelectorAll(".reveal");
+    if (!("IntersectionObserver" in window)) {
+        els.forEach(function (el) { el.classList.add("in"); });
+        return;
+    }
+    const io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (en) {
+            if (en.isIntersecting) {
+                en.target.classList.add("in");
+                io.unobserve(en.target);
+            }
+        });
+    }, { threshold: 0.12, rootMargin: "0px 0px -36px 0px" });
+    els.forEach(function (el) { io.observe(el); });
+})();
+</script>
+{% endblock %}

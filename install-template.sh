@@ -127,6 +127,8 @@ EXCLUDES=(
     --exclude ".env" --exclude "*.db"
     --exclude "install.sh" --exclude "install-template.sh" --exclude "cloudpan-install.sh"
     --exclude "_smoke_run.py" --exclude "_smoke_tmp"
+    --exclude "_chk_new.py" --exclude "_chk_tmp"
+    --exclude "_rt_check.py" --exclude "_rt_tmp"
     --exclude ".pytest_cache" --exclude "*.log"
 )
 echo ">> 部署代码: $SRC -> $INSTALL_DIR"
@@ -153,6 +155,30 @@ fi
 echo ">> 安装/更新 Python 依赖"
 "$INSTALL_DIR/venv/bin/python" -m pip install --upgrade -q pip wheel setuptools
 "$INSTALL_DIR/venv/bin/python" -m pip install -q -r "$INSTALL_DIR/requirements.txt"
+
+# ---------- 源码编译为字节码（提升启动速度）并移除 .py 源码 ----------
+# 用服务器 Python 将源码实时编译为与源码同目录的 .pyc（legacy sourceless 布局：
+# Python 导入器在缺少 .py 时会加载同目录的 .pyc），随后删除 .py，启动/导入直接命中字节码。
+# gunicorn.conf.py（按文件路径解析）、manage.py / app.py（按脚本方式执行）必须保留源码。
+echo ">> 清理旧字节码并编译新字节码（.py -> .pyc）..."
+find "$INSTALL_DIR" -name "__pycache__" -type d -not -path "*/venv/*" -prune -exec rm -rf {} +
+find "$INSTALL_DIR" -name "*.pyc" -not -path "*/venv/*" -delete
+COMPILE_OK=1
+while IFS= read -r src; do
+    if ! "$INSTALL_DIR/venv/bin/python" -c "import py_compile,sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)" "$src" "${src%.py}.pyc"; then
+        COMPILE_OK=0
+        break
+    fi
+done < <(find "$INSTALL_DIR" -name "*.py" -not -path "*/venv/*" \
+            -not -name "manage.py" -not -name "gunicorn.conf.py" -not -name "app.py")
+if [ "$COMPILE_OK" = "1" ]; then
+    echo ">> 移除 .py 源码（保留入口 manage.py / gunicorn.conf.py / app.py）"
+    find "$INSTALL_DIR" -name "*.py" -not -path "*/venv/*" \
+        -not -name "manage.py" -not -name "gunicorn.conf.py" -not -name "app.py" -delete
+else
+    echo "警告：字节码编译未完全成功，保留源码运行（功能不受影响）"
+    find "$INSTALL_DIR" -name "*.pyc" -not -path "*/venv/*" -delete
+fi
 
 # ---------- systemd 服务 ----------
 echo ">> 注册 systemd 服务 $SERVICE"

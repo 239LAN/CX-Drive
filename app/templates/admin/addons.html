@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}叠加包管理 - 创想云盘{% endblock %}
+{% block content %}
+<h4 class="mb-3"><i class="bi bi-box-seam"></i> 叠加包管理
+    <a href="{{ url_for('admin.index') }}" class="btn btn-sm btn-outline-secondary ms-2">← 返回</a>
+    <button class="btn btn-sm btn-success" data-bs-toggle="modal" data-bs-target="#addonModal" onclick="openAddonEdit(null)">＋ 新建叠加包</button>
+</h4>
+
+<div class="card">
+    <div class="card-body p-0">
+        <table class="table table-sm table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr><th>ID</th><th>类型</th><th>名称</th><th>数量</th><th>价格</th><th>有效期（天）</th><th>排序</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+                {% for a in addons %}
+                <tr>
+                    <td>{{ a.id }}</td>
+                    <td><span class="badge {{ 'bg-info' if a.type=='traffic' else 'bg-success' }}">{{ '流量' if a.type=='traffic' else '容量' }}</span></td>
+                    <td>{{ a.name }}</td>
+                    <td>{{ a.amount_bytes|human_size }}</td>
+                    <td>¥{{ a.price }}</td>
+                    <td>{{ a.duration_days }}</td>
+                    <td>{{ a.sort }}</td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#addonModal"
+                                onclick="openAddonEdit(this)"
+                                data-id="{{ a.id }}" data-type="{{ a.type }}" data-name="{{ a.name }}"
+                                data-amount="{{ (a.amount_bytes / 1024**3)|round(2) }}"
+                                data-price="{{ a.price }}" data-days="{{ a.duration_days }}" data-sort="{{ a.sort }}">编辑</button>
+                        <form method="post" action="{{ url_for('admin.addon_delete', pkg_id=a.id) }}" class="d-inline" onsubmit="return confirm('确定删除该叠加包？')">
+                            <button class="btn btn-sm btn-outline-danger">删除</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- 叠加包编辑弹窗 -->
+<div class="modal fade" id="addonModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">叠加包信息</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+        <form method="post" action="{{ url_for('admin.addon_save') }}">
+            <div class="modal-body row g-3">
+                <input type="hidden" name="package_id" id="a_pkg_id">
+                <div class="col-md-4"><label class="form-label">类型</label>
+                    <select name="type" class="form-select" id="a_type">
+                        <option value="traffic">下载流量</option>
+                        <option value="storage">容量</option>
+                    </select></div>
+                <div class="col-md-4"><label class="form-label">名称</label>
+                    <input type="text" name="name" id="a_name" class="form-control" required></div>
+                <div class="col-md-4"><label class="form-label">数量（GB，可小数）</label>
+                    <input type="number" step="0.01" min="0.01" name="amount_gb" id="a_amount" class="form-control" required></div>
+                <div class="col-md-4"><label class="form-label">价格（元）</label>
+                    <input type="number" step="0.01" min="0" name="price" id="a_price" class="form-control" required></div>
+                <div class="col-md-4"><label class="form-label">有效期（天）</label>
+                    <input type="number" min="1" name="duration_days" id="a_days" class="form-control" required></div>
+                <div class="col-md-4"><label class="form-label">排序</label>
+                    <input type="number" name="sort" id="a_sort" class="form-control" value="0"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+                <button class="btn btn-primary">保存</button>
+            </div>
+        </form>
+    </div></div>
+</div>
+
+<script>
+function openAddonEdit(el) {
+    const f = id => document.getElementById(id);
+    if (!el) {
+        f('a_pkg_id').value = '';
+        f('a_name').value = '';
+        f('a_amount').value = '';
+        f('a_price').value = '0';
+        f('a_days').value = '30';
+        f('a_sort').value = '0';
+        f('a_type').value = 'storage';
+        return;
+    }
+    const d = el.dataset;
+    f('a_pkg_id').value = d.id;
+    f('a_name').value = d.name;
+    f('a_amount').value = d.amount;
+    f('a_price').value = d.price;
+    f('a_days').value = d.days;
+    f('a_sort').value = d.sort;
+    f('a_type').value = d.type;
+}
+</script>
+{% endblock %}

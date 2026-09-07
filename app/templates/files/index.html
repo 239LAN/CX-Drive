@@ -1,0 +1,541 @@
+{% extends "base.html" %}
+{% block title %}我的文件 - 创想云盘{% endblock %}
+{% block content %}
+
+<!-- 容量/流量概览 -->
+<div class="card mb-3">
+    <div class="card-body py-2 d-flex flex-wrap gap-3 align-items-center">
+        <span><i class="bi bi-hdd"></i> 空间：{{ q.used_storage|human_size }} / {{ q.storage_quota|human_size }}</span>
+        <span><i class="bi bi-speedometer2"></i> 下载限速：{{ q.speed_limit|human_speed }}</span>
+        <span><i class="bi bi-arrow-down-up"></i> 月流量：{{ (q.used_upload + q.used_download)|human_size }}
+            {% if q.monthly_traffic %}/ {{ (q.monthly_traffic + q.traffic_addon)|human_size }}{% else %}（不限）{% endif %}</span>
+        <span class="ms-auto">
+            <span class="badge bg-info">{{ q.plan.display_name }}</span>
+            {% if current_user.storage_locked %}<span class="badge bg-danger">容量已锁定</span>{% endif %}
+        </span>
+    </div>
+</div>
+
+<!-- 面包屑 + 工具栏 -->
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="d-flex align-items-center mb-2">
+            <nav class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{{ url_for('files.index') }}"><i class="bi bi-house"></i></a></li>
+                {% for c in crumbs %}
+                <li class="breadcrumb-item {% if loop.last %}active{% endif %}">
+                    {% if not loop.last %}<a href="{{ url_for('files.index', parent_id=c.id) }}">{% endif %}{{ c.name }}{% if not loop.last %}</a>{% endif %}
+                </li>
+                {% endfor %}
+            </nav>
+        </div>
+
+        <div class="d-flex flex-wrap gap-2">
+            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#uploadModal">
+                <i class="bi bi-cloud-upload"></i> 上传文件
+            </button>
+            <button class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#newFolderModal">
+                <i class="bi bi-folder-plus"></i> 新建文件夹
+            </button>
+            <a href="{{ url_for('remote.index') }}" class="btn btn-outline-primary">
+                <i class="bi bi-cloud-arrow-down"></i> 远程下载
+            </a>
+            <form method="get" class="d-flex ms-auto align-items-center" style="gap:.5rem"
+                  action="{% if parent and not search %}{{ url_for('files.index', parent_id=parent.id) }}{% else %}{{ url_for('files.index') }}{% endif %}">
+                <input type="text" name="q" class="form-control form-control-sm" placeholder="搜索全部文件" value="{{ search or '' }}" style="width:180px">
+                <select name="sort" class="form-select form-select-sm" onchange="this.form.submit()" style="width:auto">
+                    <option value="name" {% if sort=='name' %}selected{% endif %}>按名称</option>
+                    <option value="time" {% if sort=='time' %}selected{% endif %}>按修改时间</option>
+                    <option value="size" {% if sort=='size' %}selected{% endif %}>按大小</option>
+                </select>
+                <select name="order" class="form-select form-select-sm" onchange="this.form.submit()" style="width:auto">
+                    <option value="asc" {% if order=='asc' %}selected{% endif %}>升序</option>
+                    <option value="desc" {% if order=='desc' %}selected{% endif %}>降序</option>
+                </select>
+                <button class="btn btn-outline-primary btn-sm">搜索</button>
+                {% if search %}<a href="{{ url_for('files.index') }}" class="btn btn-outline-secondary btn-sm">清除搜索</a>{% endif %}
+            </form>
+        </div>
+        {% if search %}
+        <div class="alert alert-info py-2 mt-2 mb-0 small">
+            <i class="bi bi-search"></i> “{{ search }}” 的搜索结果（{{ items|length }} 项），匹配全部文件与文件夹
+        </div>
+        {% endif %}
+
+        {% if not search %}
+        <div id="clipboardBar" class="d-none mt-2 align-items-center gap-2 border rounded p-2 bg-primary-subtle border-primary-subtle">
+            <span class="small fw-bold"><i class="bi bi-clipboard-check"></i> 剪贴板：<span id="clipText"></span></span>
+            <button class="btn btn-sm btn-primary" id="pasteBtn"><i class="bi bi-clipboard-plus"></i> 粘贴到当前目录</button>
+            <button class="btn btn-sm btn-outline-secondary" id="clipClearBtn">清空</button>
+            <span class="small text-muted ms-auto" id="clipHint"></span>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- 批量操作条 -->
+<div id="batchBar" class="d-none mb-3">
+    <div class="card border-primary">
+        <div class="card-body py-2 d-flex align-items-center gap-2 flex-wrap">
+            <span class="fw-bold text-primary"><i class="bi bi-check2-square"></i> 已选 <span id="batchCount">0</span> 项</span>
+            <button class="btn btn-sm btn-outline-secondary" id="batchCopyBtn"><i class="bi bi-copy"></i> 复制</button>
+            <button class="btn btn-sm btn-outline-warning" id="batchCutBtn"><i class="bi bi-scissors"></i> 剪切</button>
+            <button class="btn btn-sm btn-outline-danger" id="batchDeleteBtn"><i class="bi bi-trash"></i> 移入回收站</button>
+            <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#batchMoveModal"><i class="bi bi-arrows-move"></i> 移动到…</button>
+            <button class="btn btn-sm btn-outline-primary" id="batchDownloadBtn"><i class="bi bi-file-earmark-zip"></i> 打包下载</button>
+            <button class="btn btn-sm btn-link ms-auto" id="batchClearBtn">取消选择</button>
+        </div>
+    </div>
+</div>
+
+<!-- 文件列表 -->
+<div class="card">
+    <div class="card-body p-0">
+        <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th style="width:36px"><input type="checkbox" id="checkAll" class="form-check-input" title="全选"></th>
+                    <th>名称</th>
+                    <th style="width:120px">大小</th>
+                    <th style="width:150px">修改时间</th>
+                    <th style="width:220px">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for f in items %}
+                <tr>
+                    <td><input type="checkbox" class="row-check form-check-input" value="{{ f.id }}"></td>
+                    <td>
+                        {% if f.is_dir %}
+                            <a href="{{ url_for('files.index', parent_id=f.id) }}" class="text-decoration-none">
+                                <i class="bi bi-folder-fill text-warning file-icon me-2"></i>{{ f.name }}
+                            </a>
+                        {% else %}
+                            <i class="bi bi-file-earmark text-secondary file-icon me-2"></i>{{ f.name }}
+                        {% endif %}
+                    </td>
+                    <td>{{ '-' if f.is_dir else f.size|human_size }}</td>
+                    <td>{{ f.updated_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                    <td>
+                        {% if f.is_dir %}
+                        <a href="{{ url_for('files.download', file_id=f.id) }}" class="btn btn-sm btn-outline-secondary" title="打包下载 ZIP"><i class="bi bi-file-earmark-zip"></i></a>
+                        {% else %}
+                        <a href="{{ url_for('files.download', file_id=f.id) }}" class="btn btn-sm btn-outline-primary" title="下载"><i class="bi bi-download"></i></a>
+                        {% if q.allow_preview %}
+                        <a href="{{ url_for('preview.view', file_id=f.id) }}" class="btn btn-sm btn-outline-info" title="预览"><i class="bi bi-eye"></i></a>
+                        {% endif %}
+                        {% endif %}
+                        <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#renameModal" data-id="{{ f.id }}" data-name="{{ f.name }}" title="重命名"><i class="bi bi-pencil"></i></button>
+                        <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#moveModal" data-id="{{ f.id }}" title="移动"><i class="bi bi-arrows-move"></i></button>
+                        <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#copyModal" data-id="{{ f.id }}" title="复制"><i class="bi bi-copy"></i></button>
+                        <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#shareModal" data-id="{{ f.id }}" title="分享"><i class="bi bi-share"></i></button>
+                        <form method="post" action="{{ url_for('files.delete', file_id=f.id) }}" class="d-inline" onsubmit="return confirm('确定移入回收站？')">
+                            <button class="btn btn-sm btn-outline-danger" title="删除"><i class="bi bi-trash"></i></button>
+                        </form>
+                        <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#detailModal"
+                            data-id="{{ f.id }}" data-name="{{ f.name }}" data-dir="{{ 'true' if f.is_dir else 'false' }}"
+                            data-size="{{ f.size }}" data-time="{{ f.updated_at.strftime('%Y-%m-%d %H:%M:%S') }}"
+                            data-md5="{{ f.md5 or '' }}" title="详情"><i class="bi bi-info-circle"></i></button>
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5" class="text-center text-muted py-5">
+                    {%- if search %}未找到与“{{ search }}”匹配的文件{% else %}此目录为空{% endif -%}
+                </td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- 上传弹窗 -->
+<div class="modal fade" id="uploadModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title">上传文件</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <input type="hidden" name="parent_id" value="{{ parent.id if parent else '' }}">
+                    <input type="file" class="form-control" id="uploadInput" multiple>
+                    <div class="progress mt-3 d-none" id="uploadProgressWrap">
+                        <div class="progress-bar" id="uploadProgress" style="width:0%"></div>
+                    </div>
+                    <div class="text-muted small mt-2" id="uploadStatus"></div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 新建文件夹弹窗 -->
+<div class="modal fade" id="newFolderModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">新建文件夹</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+        <form method="post" action="{{ url_for('files.create_folder') }}">
+            <div class="modal-body">
+                <input type="hidden" name="parent_id" value="{{ parent.id if parent else '' }}">
+                <input type="text" name="name" class="form-control" placeholder="文件夹名称" required>
+            </div>
+            <div class="modal-footer"><button class="btn btn-primary">创建</button></div>
+        </form>
+    </div></div>
+</div>
+
+<!-- 重命名弹窗 -->
+<div class="modal fade" id="renameModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">重命名</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+        <form method="post" id="renameForm">
+            <div class="modal-body"><input type="text" name="name" id="renameInput" class="form-control" required></div>
+            <div class="modal-footer"><button class="btn btn-primary">确定</button></div>
+        </form>
+    </div></div>
+</div>
+
+<!-- 移动弹窗 -->
+<div class="modal fade" id="moveModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">移动</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+        <form method="post" id="moveForm">
+            <div class="modal-body">
+                <label class="form-label">目标文件夹 ID（留空为根目录）</label>
+                <input type="text" name="target_parent_id" class="form-control" placeholder="文件夹 ID">
+            </div>
+            <div class="modal-footer"><button class="btn btn-primary">移动</button></div>
+        </form>
+    </div></div>
+</div>
+
+<!-- 复制弹窗 -->
+<div class="modal fade" id="copyModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">复制</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+        <form method="post" id="copyForm">
+            <div class="modal-body">
+                <label class="form-label">目标文件夹 ID（留空为根目录）</label>
+                <input type="text" name="target_parent_id" class="form-control" placeholder="文件夹 ID">
+            </div>
+            <div class="modal-footer"><button class="btn btn-primary">复制</button></div>
+        </form>
+    </div></div>
+</div>
+
+<!-- 批量移动弹窗 -->
+<div class="modal fade" id="batchMoveModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">批量移动</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+        <form method="post" id="batchMoveForm" action="{{ url_for('files.batch_move') }}">
+            <div class="modal-body">
+                <p class="small text-muted">已选 <span id="batchMoveCount">0</span> 项，移动到：</p>
+                <input type="text" name="target_parent_id" class="form-control" placeholder="目标文件夹 ID（留空为根目录）">
+            </div>
+            <div class="modal-footer"><button class="btn btn-primary">移动</button></div>
+        </form>
+    </div></div>
+</div>
+
+<!-- 分享弹窗 -->
+<div class="modal fade" id="shareModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">创建分享</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+        <form method="post" action="{{ url_for('share.create') }}" id="shareForm">
+            <div class="modal-body">
+                <input type="hidden" name="file_id" id="shareFileId">
+                <div class="mb-2"><label class="form-label">提取密码（可选）</label><input type="text" name="password" class="form-control"></div>
+                <div class="mb-2"><label class="form-label">有效期（天，可选）</label><input type="number" name="expire_days" class="form-control"></div>
+                <div class="mb-2"><label class="form-label">下载次数限制（可选）</label><input type="number" name="max_downloads" class="form-control"></div>
+            </div>
+            <div class="modal-footer"><button class="btn btn-primary">生成链接</button></div>
+        </form>
+    </div></div>
+</div>
+
+<!-- 详情弹窗 -->
+<div class="modal fade" id="detailModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title"><i class="bi bi-info-circle"></i> 文件详情</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+        <div class="modal-body">
+            <h6 id="dName" class="text-break"></h6>
+            <table class="table table-sm mt-2 mb-1">
+                <tr><th style="width:90px">类型</th><td id="dType"></td></tr>
+                <tr><th>大小</th><td id="dSize"></td></tr>
+                <tr><th>修改时间</th><td id="dTime"></td></tr>
+                <tr id="dMd5Row"><th>MD5</th><td class="d-flex align-items-center gap-2">
+                    <code id="dMd5" class="text-break"></code>
+                    <button class="btn btn-sm btn-outline-secondary" id="dCopyMd5" title="复制 MD5"><i class="bi bi-clipboard"></i></button>
+                </td></tr>
+            </table>
+            <div class="d-flex gap-2" id="dActions">
+                <a id="dDownload" class="btn btn-sm btn-primary d-none"><i class="bi bi-download"></i> 下载</a>
+                <a id="dOpenDir" class="btn btn-sm btn-outline-secondary d-none"><i class="bi bi-folder2-open"></i> 进入文件夹</a>
+            </div>
+        </div>
+    </div></div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// 批量选择与操作
+function getChecked() {
+    return [...document.querySelectorAll('.row-check:checked')].map(cb => cb.value);
+}
+function updateBatchBar() {
+    const ids = getChecked();
+    const bar = document.getElementById('batchBar');
+    document.getElementById('batchCount').textContent = ids.length;
+    document.getElementById('batchMoveCount').textContent = ids.length;
+    bar.classList.toggle('d-none', ids.length === 0);
+    bar.classList.toggle('d-flex', ids.length > 0);
+}
+document.getElementById('checkAll').addEventListener('change', (e) => {
+    document.querySelectorAll('.row-check').forEach(cb => cb.checked = e.target.checked);
+    updateBatchBar();
+});
+document.querySelectorAll('.row-check').forEach(cb => cb.addEventListener('change', updateBatchBar));
+document.getElementById('batchClearBtn').addEventListener('click', () => {
+    document.querySelectorAll('.row-check').forEach(cb => cb.checked = false);
+    document.getElementById('checkAll').checked = false;
+    updateBatchBar();
+});
+document.getElementById('batchDeleteBtn').addEventListener('click', () => {
+    const ids = getChecked();
+    if (!ids.length) return;
+    if (!confirm(`确定将选中的 ${ids.length} 项移入回收站？`)) return;
+    const fd = new FormData();
+    ids.forEach(id => fd.append('ids', id));
+    fetch('/files/batch/delete', { method: 'POST', body: fd })
+        .then(() => location.reload())
+        .catch(() => alert('操作失败'));
+});
+document.getElementById('batchDownloadBtn').addEventListener('click', () => {
+    const ids = getChecked();
+    if (!ids.length) return;
+    const u = new URL('/files/batch/download', location.origin);
+    ids.forEach(id => u.searchParams.append('ids', id));
+    location.href = u.toString();
+});
+document.getElementById('batchMoveForm').addEventListener('submit', () => {
+    const form = document.getElementById('batchMoveForm');
+    form.querySelectorAll('input[name="ids"]').forEach(i => i.remove());
+    getChecked().forEach(id => {
+        const inp = document.createElement('input');
+        inp.type = 'hidden'; inp.name = 'ids'; inp.value = id;
+        form.appendChild(inp);
+    });
+});
+
+// 剪贴板：复制/剪切 -> 目标目录粘贴（Windows 风格，跨目录）
+const CURRENT_DIR = {{ (parent.id if parent and not search else 'null') }};
+const CLIP_KEY = 'cx_clipboard';
+
+function fmtSize(n) {
+    n = Number(n) || 0;
+    if (n <= 0) return '0B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? n : n.toFixed(2)) + units[i];
+}
+function loadClip() {
+    try { return JSON.parse(localStorage.getItem(CLIP_KEY)) || null; }
+    catch (e) { return null; }
+}
+function renderClip() {
+    const bar = document.getElementById('clipboardBar');
+    if (!bar) return;
+    const clip = loadClip();
+    if (!clip || !clip.ids || !clip.ids.length) {
+        bar.classList.add('d-none'); bar.classList.remove('d-flex');
+        return;
+    }
+    bar.classList.remove('d-none'); bar.classList.add('d-flex');
+    const modeTxt = clip.mode === 'cut' ? '剪切（粘贴后自动清空）' : '复制';
+    document.getElementById('clipText').textContent = `${modeTxt}：${clip.ids.length} 项`;
+    const hint = document.getElementById('clipHint');
+    if (CURRENT_DIR && String(clip.source) === String(CURRENT_DIR) && clip.mode === 'cut') {
+        hint.textContent = '提示：目标与来源为同一目录，剪切粘贴不会产生变化';
+    } else { hint.textContent = ''; }
+}
+function saveClip(clip) {
+    if (clip) localStorage.setItem(CLIP_KEY, JSON.stringify(clip));
+    else localStorage.removeItem(CLIP_KEY);
+    renderClip();
+}
+function setClip(mode) {
+    const ids = getChecked();
+    if (!ids.length) { alert('请先勾选要操作的条目'); return; }
+    saveClip({ ids, mode, source: CURRENT_DIR });
+    document.querySelectorAll('.row-check').forEach(cb => cb.checked = false);
+    document.getElementById('checkAll').checked = false;
+    updateBatchBar();
+}
+document.getElementById('batchCopyBtn').addEventListener('click', () => setClip('copy'));
+document.getElementById('batchCutBtn').addEventListener('click', () => setClip('cut'));
+document.getElementById('clipClearBtn').addEventListener('click', () => saveClip(null));
+document.getElementById('pasteBtn').addEventListener('click', async () => {
+    const clip = loadClip();
+    if (!clip || !clip.ids || !clip.ids.length) return;
+    try {
+        const resp = await fetch('/files/api/paste', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: clip.ids, mode: clip.mode, target: CURRENT_DIR })
+        });
+        const data = await resp.json();
+        if (resp.ok && data.ok) {
+            if (clip.mode === 'cut') saveClip(null);
+            const msg = (data.failed && data.failed.length)
+                ? `成功 ${data.done} 项，失败 ${data.failed.length} 项（如：${data.failed[0]}）`
+                : `操作完成（${data.done} 项）`;
+            alert(msg);
+            location.reload();
+        } else {
+            alert(data.error || '粘贴失败，请重试');
+        }
+    } catch (e) {
+        alert('粘贴失败：网络错误');
+    }
+});
+
+// 详情弹窗
+document.querySelectorAll('[data-bs-target="#detailModal"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const isDir = btn.dataset.dir === 'true';
+        document.getElementById('dName').textContent = btn.dataset.name;
+        document.getElementById('dType').textContent = isDir ? '文件夹' : '文件';
+        document.getElementById('dSize').textContent = isDir ? '-' : fmtSize(btn.dataset.size);
+        document.getElementById('dTime').textContent = btn.dataset.time;
+        const md5 = (btn.dataset.md5 || '').trim();
+        document.getElementById('dMd5Row').style.display = (isDir || !md5) ? 'none' : '';
+        document.getElementById('dMd5').textContent = md5 || '-';
+        const dl = document.getElementById('dDownload');
+        dl.classList.toggle('d-none', isDir);
+        dl.href = `/files/${btn.dataset.id}/download`;
+        const open = document.getElementById('dOpenDir');
+        open.classList.toggle('d-none', !isDir);
+        open.href = `/files/${btn.dataset.id}`;
+    });
+});
+document.getElementById('dCopyMd5').addEventListener('click', () => {
+    const t = document.getElementById('dMd5').textContent || '';
+    if (!t || t === '-') return;
+    navigator.clipboard?.writeText(t).then(() => alert('MD5 已复制')).catch(() => alert('复制失败'));
+});
+renderClip();
+
+// 通用：把 data-id 填入各弹窗
+document.querySelectorAll('[data-bs-target="#renameModal"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.getElementById('renameInput').value = btn.dataset.name;
+        document.getElementById('renameForm').action = `/files/${btn.dataset.id}/rename`;
+    });
+});
+document.querySelectorAll('[data-bs-target="#moveModal"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.getElementById('moveForm').action = `/files/${btn.dataset.id}/move`;
+    });
+});
+document.querySelectorAll('[data-bs-target="#copyModal"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.getElementById('copyForm').action = `/files/${btn.dataset.id}/copy`;
+    });
+});
+document.querySelectorAll('[data-bs-target="#shareModal"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.getElementById('shareFileId').value = btn.dataset.id;
+    });
+});
+
+// 分片上传
+const CHUNK_SIZE = 4 * 1024 * 1024;
+document.getElementById('uploadInput').addEventListener('change', async (e) => {
+    const files = e.target.files;
+    if (!files.length) return;
+    const progressWrap = document.getElementById('uploadProgressWrap');
+    const progressBar = document.getElementById('uploadProgress');
+    const status = document.getElementById('uploadStatus');
+    progressWrap.classList.remove('d-none');
+
+    for (const file of files) {
+        status.textContent = `正在上传 ${file.name}...`;
+        try {
+            if (file.size > CHUNK_SIZE) {
+                await uploadLargeFile(file, progressBar, status);
+            } else {
+                await uploadSmallFile(file, progressBar, status);
+            }
+        } catch (err) {
+            status.textContent = `上传失败：${err.message}`;
+            break;
+        }
+    }
+    status.textContent = '全部完成';
+    setTimeout(() => location.reload(), 500);
+});
+
+async function uploadSmallFile(file, progressBar, status) {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('parent_id', document.querySelector('#uploadForm input[name=parent_id]').value);
+    await fetch('/files/upload', { method: 'POST', body: fd });
+    progressBar.style.width = '100%';
+}
+
+async function uploadLargeFile(file, progressBar, status) {
+    const parent_id = document.querySelector('#uploadForm input[name=parent_id]').value;
+    // 计算 md5（简化：用文件名+大小生成一个伪标识；真实场景应在前端计算完整 md5）
+    const fakeMd5 = await simpleHash(file.name + file.size + file.lastModified);
+
+    const initRes = await fetch('/api/upload/init', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            filename: file.name, total_size: file.size,
+            chunk_size: CHUNK_SIZE, md5: fakeMd5, parent_id: parent_id
+        })
+    });
+    const initData = await initRes.json();
+    if (initData.fast) {
+        status.textContent = '秒传成功';
+        progressBar.style.width = '100%';
+        return;
+    }
+    const uploadId = initData.upload_id;
+
+    let index = 0;
+    let offset = 0;
+    while (offset < file.size) {
+        const chunk = file.slice(offset, offset + CHUNK_SIZE);
+        const fd = new FormData();
+        fd.append('upload_id', uploadId);
+        fd.append('index', index);
+        fd.append('chunk', chunk);
+        await fetch('/api/upload/chunk', { method: 'POST', body: fd });
+        offset += CHUNK_SIZE;
+        index++;
+        progressBar.style.width = Math.min(100, Math.round(offset / file.size * 100)) + '%';
+    }
+
+    await fetch('/api/upload/complete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ upload_id: uploadId })
+    });
+}
+
+async function simpleHash(str) {
+    // 非加密哈希，仅作秒传演示；生产应使用 MD5（SparkMD5）
+    let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+    for (let i = 0; i < str.length; i++) {
+        const ch = str.charCodeAt(i);
+        h1 = Math.imul(h1 ^ ch, 2654435761);
+        h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(16, '0');
+}
+</script>
+{% endblock %}

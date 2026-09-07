@@ -15,11 +15,12 @@ class Config:
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
-    # 文件存储根目录（物理文件实体）
+    # 文件存储根目录
     STORAGE_ROOT = os.environ.get("STORAGE_ROOT", str(BASE_DIR / "storage"))
     # 分片上传临时目录
     UPLOAD_TMP_ROOT = os.environ.get("UPLOAD_TMP_ROOT", str(BASE_DIR / "uploads"))
-    # 分片大小：4MB
+    # 远程下载临时目录
+    REMOTE_TMP_ROOT = os.environ.get("REMOTE_TMP_ROOT", str(BASE_DIR / "uploads" / "remote"))
     CHUNK_SIZE = 4 * 1024 * 1024
 
     # 会话
@@ -28,9 +29,9 @@ class Config:
     PERMANENT_SESSION_LIFETIME = 60 * 60 * 24 * 7  # 7 天
 
     # 上传安全
-    MAX_CONTENT_LENGTH = None  # 由应用层按会员权益控制，不用 Flask 全局上限
+    MAX_CONTENT_LENGTH = None  # 上传上限由应用层按会员权益控制
 
-    # 会员权益（字节单位）。套餐表会由数据库初始化，这里仅作常量兜底。
+    # 会员权益（字节单位）
     DEFAULT_STORAGE_QUOTA = 10 * 1024 ** 3       # 免费 10GB
     DEFAULT_MAX_FILE_SIZE = 256 * 1024 ** 2      # 免费 256MB
     DEFAULT_SPEED_LIMIT = 4 * 1024 ** 2          # 免费 4MB/s（字节/秒）

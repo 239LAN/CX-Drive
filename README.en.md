@@ -1,4 +1,4 @@
-# CX-Drive
+# CX-Drive（创想云盘）
 
 **[简体中文](README.md) | English**
 
