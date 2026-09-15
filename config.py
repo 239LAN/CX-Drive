@@ -146,6 +146,8 @@ class Config:
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
     PERMANENT_SESSION_LIFETIME = 60 * 60 * 24 * 7  # 7 天
+    # 「保持登录状态」的 remember_token 有效期（Flask-Login 默认 365 天）
+    REMEMBER_COOKIE_DURATION = 60 * 60 * 24 * 7  # 7 天
 
     # 上传安全
     MAX_CONTENT_LENGTH = None  # 上传上限由应用层按会员权益控制
