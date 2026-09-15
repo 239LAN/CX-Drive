@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% block title %}登录 - 创想云盘{% endblock %}
+{% block title %}登录 - {{ site_name }}{% endblock %}
 {% block content %}
 <div class="row justify-content-center">
     <div class="col-md-5 col-lg-4">
         <div class="card mt-5">
             <div class="card-body p-4">
-                <h4 class="text-center mb-4"><i class="bi bi-cloud-fill text-primary"></i> 登录创想云盘</h4>
+                <h4 class="text-center mb-4"><i class="bi bi-cloud-fill text-primary"></i> 登录{{ site_name }}</h4>
                 <form method="post">
                     <div class="mb-3">
                         <label class="form-label">用户名</label>
@@ -19,9 +19,20 @@
                         <input class="form-check-input" type="checkbox" name="remember" id="remember">
                         <label class="form-check-label" for="remember">记住我</label>
                     </div>
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" name="agree" id="agree" required>
+                        <label class="form-check-label small" for="agree">
+                            我已阅读并同意
+                            <a href="{{ url_for('main.terms') }}" target="_blank">《用户协议》</a>、
+                            <a href="{{ url_for('main.privacy') }}" target="_blank">《隐私政策》</a>及
+                            <a href="{{ url_for('main.licenses') }}" target="_blank">《开源软件授权许可证》</a>
+                        </label>
+                    </div>
                     <button class="btn btn-primary w-100">登录</button>
                 </form>
+                {% if allow_register %}
                 <p class="text-center mt-3 mb-0">还没有账号？<a href="{{ url_for('auth.register') }}">立即注册</a></p>
+                {% endif %}
             </div>
         </div>
     </div>

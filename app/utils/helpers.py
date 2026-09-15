@@ -5,13 +5,30 @@ import uuid
 from datetime import datetime, timezone
 from functools import wraps
 
-from flask import abort
+from flask import abort, session
 from flask_login import current_user
 
 
 def utcnow() -> datetime:
     """当前 UTC 时间（naive）"""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def get_admin_view_user():
+    """管理员正在代管的目标用户；未代管返回 None"""
+    if not current_user.is_authenticated or not current_user.is_admin:
+        return None
+    uid = session.get("admin_view_uid")
+    if not uid:
+        return None
+    from app.extensions import db
+    from app.models import User
+    return db.session.get(User, int(uid))
+
+
+def current_file_owner():
+    """文件操作主体：管理员代管他人文件时为目标用户，否则为当前登录用户"""
+    return get_admin_view_user() or current_user
 
 
 def admin_required(f):

@@ -1,13 +1,24 @@
 """在线预览路由（仅 VIP/SVIP）"""
 import os
 
-from flask import Blueprint, render_template, request, send_file, abort, Response
-from flask_login import login_required, current_user
+from flask import (
+    Blueprint, render_template, request, send_file, abort, Response, current_app,
+)
+from flask_login import login_required
 
 from app.services import file_service
 from app.services.quota_service import QuotaError, check_preview
+from app.utils.helpers import current_file_owner
 
 preview_bp = Blueprint("preview", __name__)
+
+
+@preview_bp.before_request
+def _check_enabled():
+    """功能开关（config.yml: features.enable_preview）"""
+    if not current_app.config["ENABLE_PREVIEW"]:
+        abort(403, "在线预览功能已关闭")
+
 
 # 支持的预览类型
 TEXT_EXT = {".txt", ".md", ".py", ".js", ".html", ".css", ".json", ".xml", ".log", ".csv", ".yml", ".yaml", ".ini", ".conf", ".sh"}
@@ -19,12 +30,13 @@ AUDIO_EXT = {".mp3", ".wav", ".ogg", ".flac", ".m4a"}
 @preview_bp.route("/preview/<int:file_id>")
 @login_required
 def view(file_id):
-    f = file_service.get_owned_file(current_user, file_id)
+    owner = current_file_owner()
+    f = file_service.get_owned_file(owner, file_id)
     if f.is_dir:
         abort(400, "无法预览文件夹")
 
     try:
-        check_preview(current_user)
+        check_preview(owner)
     except QuotaError as e:
         abort(403, str(e))
 
@@ -62,11 +74,12 @@ def view(file_id):
 @login_required
 def stream(file_id):
     """图片/视频/音频/PDF 流式输出（视频支持 Range）"""
-    f = file_service.get_owned_file(current_user, file_id)
+    owner = current_file_owner()
+    f = file_service.get_owned_file(owner, file_id)
     if f.is_dir:
         abort(400)
     try:
-        check_preview(current_user)
+        check_preview(owner)
     except QuotaError as e:
         abort(403, str(e))
 

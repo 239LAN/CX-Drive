@@ -143,6 +143,6 @@ python _smoke_run.py
 
 ## License
 
-CX-Drive（创想云盘）© 2026 [239LAN](https://github.com/239LAN)，采用 **GNU Affero General Public License v3.0** 开源，详见 [LICENSE](LICENSE)。
+创想云盘 © 2026 [239LAN](https://github.com/239LAN)，采用 **GNU Affero General Public License v3.0** 开源，详见 [LICENSE](LICENSE)。
 
 按 AGPL-3.0 要求：基于本项目提供网络服务（含二次开发、修改后部署）的一方，也必须以相同协议向服务使用者开放其完整源代码。

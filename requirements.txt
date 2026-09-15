@@ -7,4 +7,5 @@ WTForms==3.1.2
 email-validator==2.1.1
 APScheduler==3.10.4
 python-dotenv==1.0.1
+PyYAML==6.0.3
 gunicorn==21.2.0

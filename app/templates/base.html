@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}CX-Drive · 创想云盘{% endblock %}</title>
+    <title>{% block title %}{{ site_name }}{% endblock %}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <style>
@@ -20,7 +20,7 @@
 {% if current_user.is_authenticated %}
 <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
     <div class="container-fluid">
-        <a class="navbar-brand" href="{{ url_for('files.index') }}"><i class="bi bi-cloud-fill"></i> CX-Drive 创想云盘</a>
+        <a class="navbar-brand" href="{{ url_for('files.index') }}"><i class="bi bi-cloud-fill"></i> {{ site_name }}</a>
         <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nav">
             <span class="navbar-toggler-icon"></span>
         </button>
@@ -28,8 +28,12 @@
             <ul class="navbar-nav me-auto">
                 <li class="nav-item"><a class="nav-link" href="{{ url_for('files.index') }}">我的文件</a></li>
                 <li class="nav-item"><a class="nav-link" href="{{ url_for('files.trash') }}">回收站</a></li>
+                {% if enable_share %}
                 <li class="nav-item"><a class="nav-link" href="{{ url_for('share.my_shares') }}">我的分享</a></li>
+                {% endif %}
+                {% if enable_remote %}
                 <li class="nav-item"><a class="nav-link" href="{{ url_for('remote.index') }}"><i class="bi bi-cloud-arrow-down"></i> 远程下载</a></li>
+                {% endif %}
                 <li class="nav-item"><a class="nav-link" href="{{ url_for('billing.index') }}">会员中心</a></li>
                 {% if current_user.is_admin %}
                 <li class="nav-item"><a class="nav-link text-warning" href="{{ url_for('admin.index') }}">管理后台</a></li>
@@ -54,7 +58,7 @@
 {% else %}
 <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
     <div class="container-fluid">
-        <a class="navbar-brand" href="{{ url_for('main.index') }}"><i class="bi bi-cloud-fill"></i> CX-Drive 创想云盘</a>
+        <a class="navbar-brand" href="{{ url_for('main.index') }}"><i class="bi bi-cloud-fill"></i> {{ site_name }}</a>
         <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nav">
             <span class="navbar-toggler-icon"></span>
         </button>
@@ -64,7 +68,9 @@
             </ul>
             <ul class="navbar-nav">
                 <li class="nav-item"><a class="nav-link" href="{{ url_for('auth.login') }}">登录</a></li>
+                {% if allow_register %}
                 <li class="nav-item"><a class="nav-link" href="{{ url_for('auth.register') }}">注册</a></li>
+                {% endif %}
             </ul>
         </div>
     </div>
@@ -72,6 +78,16 @@
 {% endif %}
 
 <main class="container my-4">
+    {% if admin_view_user %}
+    <div class="alert alert-warning d-flex justify-content-between align-items-center py-2">
+        <div><i class="bi bi-person-badge"></i> 管理员代管中：正在查看并管理用户
+            <b>{{ admin_view_user.username }}</b> 的文件</div>
+        <form method="post" action="{{ url_for('admin.exit_view_files') }}" class="mb-0">
+            <button class="btn btn-sm btn-outline-dark">退出代管</button>
+        </form>
+    </div>
+    {% endif %}
+
     {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
             {% for category, message in messages %}
@@ -85,6 +101,19 @@
 
     {% block content %}{% endblock %}
 </main>
+
+<footer class="text-center text-muted small py-4">
+    <div class="container">
+        <a class="link-secondary text-decoration-none me-3" href="{{ url_for('main.terms') }}">用户协议</a>
+        <a class="link-secondary text-decoration-none me-3" href="{{ url_for('main.privacy') }}">隐私政策</a>
+        <a class="link-secondary text-decoration-none" href="{{ url_for('main.licenses') }}">开源软件授权许可证</a>
+        <div class="mt-2">
+            {{ project_name }} · 基于
+            <a class="link-secondary" href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0</a>
+            开源
+        </div>
+    </div>
+</footer>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 {% block extra_js %}{% endblock %}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}注册 - 创想云盘{% endblock %}
+{% block title %}注册 - {{ site_name }}{% endblock %}
 {% block content %}
 <div class="row justify-content-center">
     <div class="col-md-5 col-lg-4">
@@ -22,6 +22,15 @@
                     <div class="mb-3">
                         <label class="form-label">确认密码</label>
                         <input type="password" class="form-control" name="confirm" required minlength="6">
+                    </div>
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" name="agree" id="agree" required>
+                        <label class="form-check-label small" for="agree">
+                            我已阅读并同意
+                            <a href="{{ url_for('main.terms') }}" target="_blank">《用户协议》</a>、
+                            <a href="{{ url_for('main.privacy') }}" target="_blank">《隐私政策》</a>及
+                            <a href="{{ url_for('main.licenses') }}" target="_blank">《开源软件授权许可证》</a>
+                        </label>
                     </div>
                     <button class="btn btn-primary w-100">注册</button>
                 </form>

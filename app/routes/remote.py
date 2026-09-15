@@ -2,7 +2,7 @@
 from urllib.parse import urlsplit, unquote
 
 from flask import (
-    Blueprint, render_template, request, redirect, url_for, flash, jsonify,
+    Blueprint, render_template, request, redirect, url_for, flash, jsonify, current_app,
 )
 from flask_login import login_required, current_user
 from werkzeug.exceptions import abort
@@ -14,6 +14,13 @@ from app.services import remote_service
 from app.utils.helpers import safe_filename, utcnow
 
 remote_bp = Blueprint("remote", __name__, url_prefix="/remote")
+
+
+@remote_bp.before_request
+def _check_enabled():
+    """功能开关（config.yml: features.enable_remote）"""
+    if not current_app.config["ENABLE_REMOTE"]:
+        abort(403, "远程下载功能已关闭")
 
 
 @remote_bp.route("")

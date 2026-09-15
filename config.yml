@@ -1,0 +1,43 @@
+# ============================================================
+# 创想云盘 站点配置
+#
+# 说明：
+#   - 「项目名」指开源项目本身（project.*），是固定标识，一般无需修改；
+#     它只出现在法律条款、开源许可等指向项目本身的文案中。
+#   - 「网站名」（site.name）由部署者自定义，决定导航栏、浏览器标题、
+#     首页大标题等位置的显示文字；留空则回退为项目名。
+#   - 修改后重启服务生效：systemctl restart cx-pan
+#   - 覆盖更新时本文件会被保留，不会被源码覆盖。
+# ============================================================
+
+# ---- 项目信息（固定标识） ----
+project:
+  name: 创想云盘
+  name_en: CX-Drive
+
+# ---- 网站信息（部署者自定义） ----
+site:
+  # 网站名
+  name: 创想云盘
+
+# ---- 功能开关（true 开启 / false 关闭） ----
+features:
+  allow_register: true   # 开放注册；关闭后仅管理员可创建账号
+  enable_preview: true   # 在线预览（仅 VIP/SVIP）
+  enable_share: true     # 分享外链
+  enable_remote: true    # 远程下载
+
+# ---- HTTPS 与 HSTS ----
+# 说明：
+#   - enabled 打开后会校验证书与私钥是否存在，缺失则自动关闭 HTTPS（服务照常以 HTTP 启动）；
+#   - HSTS 仅在 HTTPS 真正生效时下发，HTTPS 未开启时自动忽略 hsts 设置；
+#   - 证书路径支持绝对路径，或以项目根目录为基准的相对路径。
+https:
+  enabled: false
+  # 证书（链）与私钥，例如 Let's Encrypt：
+  #   /etc/letsencrypt/live/example.com/fullchain.pem
+  #   /etc/letsencrypt/live/example.com/privkey.pem
+  certfile: ""
+  keyfile: ""
+  hsts: true               # 下发 Strict-Transport-Security 响应头
+  hsts_max_age: 31536000   # HSTS 有效期（秒），默认 1 年

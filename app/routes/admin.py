@@ -2,15 +2,16 @@
 from datetime import timedelta
 from decimal import Decimal
 
-from flask import Blueprint, render_template, request, redirect, url_for, flash, abort
+from flask import Blueprint, render_template, request, redirect, url_for, flash, abort, session
 from flask_login import login_required, current_user
 
 from app.extensions import db
 from app.models import (
     User, MembershipPlan, AddonPackage, File, ShareLink, BalanceLog,
-    UserMembership, UserAddon, PurchaseOrder,
+    UserMembership, UserAddon, PurchaseOrder, RechargeRecord,
+    UploadSession, AuditLog, RemoteDownload,
 )
-from app.services import billing_service
+from app.services import billing_service, file_service
 from app.services.billing_service import BillingError
 from app.services.quota_service import effective_quota
 from app.utils.helpers import admin_required, utcnow
@@ -169,6 +170,50 @@ def toggle_admin(user_id):
         db.session.commit()
         flash(f"已将 {user.username} 提升为管理员", "success")
     return redirect(request.referrer or url_for("admin.index"))
+
+
+@admin_bp.route("/user/<int:user_id>/files", methods=["POST"])
+def view_user_files(user_id):
+    """进入代管模式：以目标用户为主体浏览/管理其文件"""
+    user = db.session.get(User, user_id)
+    if user is None:
+        abort(404)
+    session["admin_view_uid"] = user.id
+    return redirect(url_for("files.index"))
+
+
+@admin_bp.route("/view_files/exit", methods=["POST"])
+def exit_view_files():
+    """退出代管模式"""
+    session.pop("admin_view_uid", None)
+    return redirect(request.referrer or url_for("admin.index"))
+
+
+@admin_bp.route("/user/<int:user_id>/delete", methods=["POST"])
+def delete_user(user_id):
+    """彻底删除用户：清除其全部文件与关联数据"""
+    user = db.session.get(User, user_id)
+    if user is None:
+        abort(404)
+    if user.id == current_user.id:
+        flash("不能删除自己的账号", "danger")
+        return redirect(url_for("admin.index"))
+    if user.is_admin and User.query.filter_by(is_admin=True).count() <= 1:
+        flash("系统至少需要保留一名管理员", "danger")
+        return redirect(url_for("admin.index"))
+
+    username = user.username
+    file_service.purge_user_data(user)  # 删除全部文件记录与物理实体
+    for model in (ShareLink, UserMembership, UserAddon, RechargeRecord,
+                  BalanceLog, PurchaseOrder, UploadSession, AuditLog, RemoteDownload):
+        model.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    db.session.delete(user)
+    db.session.commit()
+
+    if session.get("admin_view_uid") == user_id:
+        session.pop("admin_view_uid", None)
+    flash(f"已删除用户 {username} 及其全部数据", "success")
+    return redirect(url_for("admin.index"))
 
 
 # ---------- 会员套餐维护 ----------

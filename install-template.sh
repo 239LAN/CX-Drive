@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# CX-Drive 创想云盘 Linux 安装 / 覆盖更新脚本模板
+# 创想云盘 Linux 安装 / 覆盖更新脚本模板
 #
 # 用法（需 root 或 sudo）：
 #   sudo bash install.sh                   # 单文件安装包（内嵌完整源码）
@@ -18,7 +18,9 @@
 #               注册 systemd 服务并启动
 #   - 覆盖更新：再次执行即更新代码与依赖并重启服务；数据库
 #               (instance/)、用户数据 (storage/ uploads/)、密钥 (.env)
-#               均会保留，不会丢失
+#               与站点配置 (config.yml) 均会保留，不会丢失
+#   - HTTPS/HSTS：由 config.yml 的 https 段控制开关与证书路径；
+#               证书缺失时自动回退为 HTTP，HSTS 随之关闭
 # ============================================================
 set -euo pipefail
 
@@ -124,7 +126,7 @@ EXCLUDES=(
     --exclude "__pycache__" --exclude "*.pyc"
     --exclude "venv" --exclude ".venv"
     --exclude "instance" --exclude "storage" --exclude "uploads"
-    --exclude ".env" --exclude "*.db"
+    --exclude ".env" --exclude "config.yml" --exclude "*.db"
     --exclude "install.sh" --exclude "install-template.sh" --exclude "cloudpan-install.sh"
     --exclude "_smoke_run.py" --exclude "_smoke_tmp"
     --exclude "_chk_new.py" --exclude "_chk_tmp"
@@ -135,6 +137,12 @@ echo ">> 部署代码: $SRC -> $INSTALL_DIR"
 rsync -a --delete "${EXCLUDES[@]}" "$SRC/" "$INSTALL_DIR/"
 
 # ---------- 密钥与配置（仅首次生成，更新时保留） ----------
+# 站点配置：首次安装从源码复制一份，之后用户的自定义修改不会被覆盖
+if [ ! -f "$INSTALL_DIR/config.yml" ]; then
+    cp "$SRC/config.yml" "$INSTALL_DIR/config.yml"
+    echo ">> 已生成站点配置 config.yml（网站名与功能开关）"
+fi
+
 if [ ! -f "$INSTALL_DIR/.env" ]; then
     SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
     cat > "$INSTALL_DIR/.env" <<EOF
@@ -184,7 +192,7 @@ fi
 echo ">> 注册 systemd 服务 $SERVICE"
 cat > "/etc/systemd/system/${SERVICE}" <<EOF
 [Unit]
-Description=CX-Drive (创想云盘) Web Service
+Description=创想云盘 Web Service
 After=network.target
 
 [Service]
@@ -215,9 +223,14 @@ if systemctl is-active --quiet "$SERVICE"; then
     PORT_VAL="${BIND_VAL##*:}"
     [ -z "$PORT_VAL" ] || [ "$PORT_VAL" = "$BIND_VAL" ] && PORT_VAL="4280"
     IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    # 按 config.yml 的实际生效结果给出访问协议（证书缺失时已自动回退 HTTP）
+    SCHEME="http"
+    if "$INSTALL_DIR/venv/bin/python" -c "import sys; sys.path.insert(0, '$INSTALL_DIR'); from config import load_site_config; raise SystemExit(0 if load_site_config()['HTTPS_ENABLED'] else 1)" 2>/dev/null; then
+        SCHEME="https"
+    fi
     echo
     echo "===== ${MODE}完成 ====="
-    echo "访问地址: http://${IP}:${PORT_VAL}"
+    echo "访问地址: ${SCHEME}://${IP}:${PORT_VAL}"
     echo "服务状态: systemctl status ${SERVICE}"
     echo "实时日志: journalctl -u ${SERVICE} -f"
     echo "提升管理员: 先在页面注册账号，然后执行"

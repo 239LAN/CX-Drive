@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}开源软件授权许可证 - {{ site_name }}{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-9">
+        <div class="card">
+            <div class="card-body p-4 p-lg-5">
+                <h3 class="fw-bold mb-1"><i class="bi bi-box-seam text-primary"></i> 开源软件授权许可证</h3>
+                <p class="text-muted small">更新日期：{{ now.strftime('%Y-%m-%d') }}</p>
+                <hr>
+
+                <p>创想云盘的实现离不开众多优秀的开源项目。以下列出本服务使用的开源软件及其授权许可证，我们在此向所有开源作者与社区致以诚挚感谢。</p>
+
+                <h5 class="mt-4">一、本项目许可</h5>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                        <thead class="table-light">
+                            <tr><th>项目</th><th>版权</th><th>许可证</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>创想云盘</td>
+                                <td>Copyright (C) 2026 239LAN</td>
+                                <td><a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">GNU AGPL-3.0</a></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p class="small text-muted">本项目以 GNU Affero General Public License v3.0 开源。依据该协议，基于本项目向网络用户提供服务的一方，必须向服务使用者开放其修改后的完整源代码。</p>
+
+                <h5 class="mt-4">二、后端依赖</h5>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                        <thead class="table-light">
+                            <tr><th>组件</th><th>版本</th><th>许可证</th><th>版权 / 项目主页</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr><td>Flask</td><td>3.0.3</td><td>BSD-3-Clause</td><td><a href="https://palletsprojects.com/p/flask/" target="_blank" rel="noopener">Pallets</a></td></tr>
+                            <tr><td>Flask-SQLAlchemy</td><td>3.1.1</td><td>BSD-3-Clause</td><td><a href="https://github.com/pallets-eco/flask-sqlalchemy" target="_blank" rel="noopener">Pallets Eco</a></td></tr>
+                            <tr><td>Flask-Login</td><td>0.6.3</td><td>MIT</td><td><a href="https://github.com/maxcountryman/flask-login" target="_blank" rel="noopener">Matthew Frazier</a></td></tr>
+                            <tr><td>Flask-WTF</td><td>1.2.1</td><td>BSD-3-Clause</td><td><a href="https://github.com/wtforms/flask-wtf" target="_blank" rel="noopener">WTForms</a></td></tr>
+                            <tr><td>Flask-Bcrypt</td><td>1.0.1</td><td>BSD-3-Clause</td><td><a href="https://github.com/maxcountryman/flask-bcrypt" target="_blank" rel="noopener">Max Countryman</a></td></tr>
+                            <tr><td>WTForms</td><td>3.1.2</td><td>BSD-3-Clause</td><td><a href="https://wtforms.readthedocs.io/" target="_blank" rel="noopener">WTForms</a></td></tr>
+                            <tr><td>email-validator</td><td>2.1.1</td><td>Unlicense</td><td><a href="https://github.com/JoshData/python-email-validator" target="_blank" rel="noopener">Joshua Tauberer</a></td></tr>
+                            <tr><td>APScheduler</td><td>3.10.4</td><td>MIT</td><td><a href="https://github.com/agronholm/apscheduler" target="_blank" rel="noopener">Alex Grönholm</a></td></tr>
+                            <tr><td>python-dotenv</td><td>1.0.1</td><td>BSD-3-Clause</td><td><a href="https://github.com/theskumar/python-dotenv" target="_blank" rel="noopener">Saurabh Kumar</a></td></tr>
+                            <tr><td>gunicorn</td><td>21.2.0</td><td>MIT</td><td><a href="https://gunicorn.org/" target="_blank" rel="noopener">Benoit Chesneau</a></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h6 class="mt-3">间接依赖</h6>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                        <thead class="table-light">
+                            <tr><th>组件</th><th>许可证</th><th>组件</th><th>许可证</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr><td>Werkzeug</td><td>BSD-3-Clause</td><td>Jinja2</td><td>BSD-3-Clause</td></tr>
+                            <tr><td>SQLAlchemy</td><td>MIT</td><td>itsdangerous</td><td>BSD-3-Clause</td></tr>
+                            <tr><td>click</td><td>BSD-3-Clause</td><td>MarkupSafe</td><td>BSD-3-Clause</td></tr>
+                            <tr><td>blinker</td><td>MIT</td><td>greenlet</td><td>MIT / PSF-2.0</td></tr>
+                            <tr><td>typing-extensions</td><td>PSF-2.0</td><td>tzlocal</td><td>MIT</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p class="small text-muted">间接依赖的具体版本由依赖解析结果决定，请以实际安装环境中的包元数据（METADATA）为准。</p>
+
+                <h5 class="mt-4">三、前端资源</h5>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                        <thead class="table-light">
+                            <tr><th>组件</th><th>版本</th><th>许可证</th><th>项目主页</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr><td>Bootstrap</td><td>5.3.3</td><td>MIT</td><td><a href="https://getbootstrap.com/" target="_blank" rel="noopener">getbootstrap.com</a></td></tr>
+                            <tr><td>Bootstrap Icons</td><td>1.11.3</td><td>MIT</td><td><a href="https://icons.getbootstrap.com/" target="_blank" rel="noopener">icons.getbootstrap.com</a></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h5 class="mt-4">四、运行环境</h5>
+                <p>本服务运行于 Python 解释器之上，Python 采用 PSF License 授权，详见 <a href="https://docs.python.org/3/license.html" target="_blank" rel="noopener">Python 许可协议</a>。</p>
+
+                <h5 class="mt-4">五、许可证全文</h5>
+                <p>上述各开源许可证的完整文本可通过对应项目的源码仓库或官方网站获取。本项目自身的许可证全文见源码仓库根目录的 <code>LICENSE</code> 文件。</p>
+            </div>
+        </div>
+        <p class="text-center mt-3"><a href="javascript:history.back()" class="btn btn-sm btn-outline-secondary">返回</a></p>
+    </div>
+</div>
+{% endblock %}

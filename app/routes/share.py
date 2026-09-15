@@ -4,16 +4,24 @@ from datetime import timedelta
 
 from flask import (
     Blueprint, render_template, request, redirect, url_for, flash,
-    send_file, abort, session, Response, stream_with_context,
+    send_file, abort, session, Response, stream_with_context, current_app,
 )
 from flask_login import login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from app.extensions import db
 from app.models import ShareLink, File, AnonDlWeek
-from app.utils.helpers import utcnow
+from app.utils.helpers import utcnow, current_file_owner
 
 share_bp = Blueprint("share", __name__)
+
+
+@share_bp.before_request
+def _check_enabled():
+    """功能开关（config.yml: features.enable_share）"""
+    if not current_app.config["ENABLE_SHARE"]:
+        abort(403, "分享功能已关闭")
+
 
 # ---- 密码暴力破解防护（进程内，按 IP+分享） ----
 MAX_PWD_FAIL = 5
@@ -81,7 +89,8 @@ def _load_share(token: str):
 @share_bp.route("/shares")
 @login_required
 def my_shares():
-    links = ShareLink.query.filter_by(user_id=current_user.id).order_by(
+    owner = current_file_owner()
+    links = ShareLink.query.filter_by(user_id=owner.id).order_by(
         ShareLink.created_at.desc()).all()
     return render_template("share/list.html", links=links)
 
@@ -89,19 +98,20 @@ def my_shares():
 @share_bp.route("/share/create", methods=["POST"])
 @login_required
 def create():
+    owner = current_file_owner()
     file_id = request.form.get("file_id")
     try:
         f = db.session.get(File, int(file_id))
     except (TypeError, ValueError):
         abort(404, "文件不存在或无权访问")
-    if f is None or f.user_id != current_user.id:
+    if f is None or f.user_id != owner.id:
         abort(403)
 
     password = request.form.get("password") or None
     expire_days = request.form.get("expire_days") or None
     max_downloads = request.form.get("max_downloads") or None
 
-    link = ShareLink(file_id=f.id, user_id=current_user.id)
+    link = ShareLink(file_id=f.id, user_id=owner.id)
     if password:
         link.password_hash = generate_password_hash(password)
     if expire_days:
@@ -302,7 +312,7 @@ def _stream_limited(path: str, download_name: str, size: int, ip: str, used0: in
 @share_bp.route("/share/<int:link_id>/cancel", methods=["POST"])
 @login_required
 def cancel(link_id):
-    link = ShareLink.query.filter_by(id=link_id, user_id=current_user.id).first()
+    link = ShareLink.query.filter_by(id=link_id, user_id=current_file_owner().id).first()
     if link:
         db.session.delete(link)
         db.session.commit()

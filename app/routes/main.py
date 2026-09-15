@@ -18,3 +18,18 @@ def dashboard():
     from app.services.quota_service import effective_quota
     q = effective_quota(current_user)
     return render_template("dashboard.html", q=q)
+
+
+@main_bp.route("/terms")
+def terms():
+    return render_template("legal/terms.html")
+
+
+@main_bp.route("/privacy")
+def privacy():
+    return render_template("legal/privacy.html")
+
+
+@main_bp.route("/licenses")
+def licenses():
+    return render_template("legal/licenses.html")

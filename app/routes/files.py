@@ -6,7 +6,7 @@ from flask import (
     Blueprint, render_template, request, redirect, url_for, flash,
     send_file, jsonify, current_app, abort, Response, after_this_request,
 )
-from flask_login import login_required, current_user
+from flask_login import login_required
 
 from app.extensions import db
 from app.models import File, UploadSession
@@ -15,7 +15,7 @@ from app.services.quota_service import (
     QuotaError, check_upload, check_download, get_speed_limit,
     consume_traffic, effective_quota,
 )
-from app.utils.helpers import utcnow
+from app.utils.helpers import utcnow, current_file_owner
 
 files_bp = Blueprint("files", __name__)
 
@@ -37,29 +37,31 @@ def _parse_ids(raw) -> list:
 @files_bp.route("/files/<int:parent_id>")
 @login_required
 def index(parent_id=None):
+    owner = current_file_owner()
     sort = request.args.get("sort") if request.args.get("sort") in _SORT_CHOICES else "name"
     order = request.args.get("order") if request.args.get("order") in _ORDER_CHOICES else "asc"
     keyword = (request.args.get("q") or "").strip()
-    q = effective_quota(current_user)
+    q = effective_quota(owner)
 
     if keyword:
-        items = file_service.search(current_user, keyword, sort, order)
+        items = file_service.search(owner, keyword, sort, order)
         return render_template("files/index.html", parent=None, items=items, crumbs=[],
-                               q=q, search=keyword, sort=sort, order=order)
+                               q=q, search=keyword, sort=sort, order=order, owner=owner)
 
-    parent, items = file_service.list_dir(current_user, parent_id, sort, order)
+    parent, items = file_service.list_dir(owner, parent_id, sort, order)
     crumbs = file_service.get_breadcrumb(parent)
     return render_template("files/index.html", parent=parent, items=items, crumbs=crumbs,
-                           q=q, search="", sort=sort, order=order)
+                           q=q, search="", sort=sort, order=order, owner=owner)
 
 
 @files_bp.route("/files/folder/new", methods=["POST"])
 @login_required
 def create_folder():
+    owner = current_file_owner()
     parent_id = request.form.get("parent_id") or None
     name = request.form.get("name") or ""
     try:
-        file_service.create_folder(current_user, parent_id, name)
+        file_service.create_folder(owner, parent_id, name)
         flash("文件夹创建成功", "success")
     except ValueError as e:
         flash(str(e), "danger")
@@ -70,6 +72,7 @@ def create_folder():
 @login_required
 def upload():
     """普通（小文件）上传"""
+    owner = current_file_owner()
     parent_id = request.form.get("parent_id") or None
     f = request.files.get("file")
     if f is None:
@@ -82,16 +85,16 @@ def upload():
     f.seek(0)
 
     try:
-        check_upload(current_user, size)
+        check_upload(owner, size)
     except QuotaError as e:
         flash(str(e), "danger")
         return redirect(request.referrer or url_for("files.index"))
 
     try:
         file_service.save_uploaded_file(
-            current_user, parent_id, f.filename, size, f, mime=f.mimetype
+            owner, parent_id, f.filename, size, f, mime=f.mimetype
         )
-        consume_traffic(current_user, size, "upload")
+        consume_traffic(owner, size, "upload")
         db.session.commit()
         flash("上传成功", "success")
     except Exception as e:
@@ -103,15 +106,16 @@ def upload():
 @files_bp.route("/files/<int:file_id>/download")
 @login_required
 def download(file_id):
-    f = file_service.get_owned_file(current_user, file_id)
+    owner = current_file_owner()
+    f = file_service.get_owned_file(owner, file_id)
     if f.is_dir:
-        return _download_folder(f)
-    return _download_file(f)
+        return _download_folder(owner, f)
+    return _download_file(owner, f)
 
 
-def _download_file(f: File):
+def _download_file(owner, f: File):
     try:
-        check_download(current_user, f.size)
+        check_download(owner, f.size)
     except QuotaError as e:
         flash(str(e), "danger")
         return redirect(request.referrer or url_for("files.index"))
@@ -120,10 +124,10 @@ def _download_file(f: File):
     if not os.path.exists(path):
         abort(404, "文件实体丢失")
 
-    consume_traffic(current_user, f.size, "download")
+    consume_traffic(owner, f.size, "download")
     db.session.commit()
 
-    limit = get_speed_limit(current_user)  # None = 不限
+    limit = get_speed_limit(owner)  # None = 不限
     return _stream_file(path, f.name, f.size, limit)
 
 
@@ -151,14 +155,14 @@ def _urlquote(s: str) -> str:
     return quote(s)
 
 
-def _download_folder(f: File):
+def _download_folder(owner, f: File):
     """文件夹打包 zip 下载：先写临时文件再回传"""
     import zipfile
     import tempfile
 
-    total = file_service.tree_size(current_user, f)
+    total = file_service.tree_size(owner, f)
     try:
-        check_download(current_user, total)
+        check_download(owner, total)
     except QuotaError as e:
         flash(str(e), "danger")
         return redirect(request.referrer or url_for("files.index"))
@@ -175,7 +179,7 @@ def _download_folder(f: File):
             pass
         raise
 
-    consume_traffic(current_user, total, "download")
+    consume_traffic(owner, total, "download")
     db.session.commit()
 
     @after_this_request
@@ -206,7 +210,7 @@ def _add_dir_to_zip(zf, node: File, prefix: str):
 def rename(file_id):
     name = request.form.get("name") or ""
     try:
-        file_service.rename(current_user, file_id, name)
+        file_service.rename(current_file_owner(), file_id, name)
         flash("重命名成功", "success")
     except (ValueError, PermissionError) as e:
         flash(str(e), "danger")
@@ -218,7 +222,7 @@ def rename(file_id):
 def move(file_id):
     target = request.form.get("target_parent_id") or None
     try:
-        file_service.move(current_user, file_id, target)
+        file_service.move(current_file_owner(), file_id, target)
         flash("移动成功", "success")
     except (ValueError, PermissionError) as e:
         flash(str(e), "danger")
@@ -230,7 +234,7 @@ def move(file_id):
 def copy(file_id):
     target = request.form.get("target_parent_id") or None
     try:
-        file_service.copy(current_user, file_id, target)
+        file_service.copy(current_file_owner(), file_id, target)
         flash("复制成功", "success")
     except (ValueError, PermissionError) as e:
         flash(str(e), "danger")
@@ -241,7 +245,7 @@ def copy(file_id):
 @login_required
 def delete(file_id):
     try:
-        file_service.soft_delete(current_user, file_id)
+        file_service.soft_delete(current_file_owner(), file_id)
         db.session.commit()
         flash("已移入回收站", "success")
     except (ValueError, PermissionError) as e:
@@ -276,7 +280,7 @@ def batch_delete():
         flash("未选择文件", "danger")
         return redirect(request.referrer or url_for("files.index"))
     return _batch_run(
-        lambda fid: file_service.soft_delete(current_user, fid), ids, "移入回收站")
+        lambda fid: file_service.soft_delete(current_file_owner(), fid), ids, "移入回收站")
 
 
 @files_bp.route("/files/batch/move", methods=["POST"])
@@ -288,7 +292,7 @@ def batch_move():
         flash("未选择文件", "danger")
         return redirect(request.referrer or url_for("files.index"))
     return _batch_run(
-        lambda fid: file_service.move(current_user, fid, target), ids, "移动")
+        lambda fid: file_service.move(current_file_owner(), fid, target), ids, "移动")
 
 
 @files_bp.route("/files/batch/copy", methods=["POST"])
@@ -300,7 +304,7 @@ def batch_copy():
         flash("未选择文件", "danger")
         return redirect(request.referrer or url_for("files.index"))
     return _batch_run(
-        lambda fid: file_service.copy(current_user, fid, target), ids, "复制")
+        lambda fid: file_service.copy(current_file_owner(), fid, target), ids, "复制")
 
 
 @files_bp.route("/files/api/paste", methods=["POST"])
@@ -324,10 +328,11 @@ def paste():
             return jsonify(ok=False, error="目标文件夹无效"), 400
 
     fn = file_service.copy if mode == "copy" else file_service.move
+    owner = current_file_owner()
     done, failed = 0, []
     for fid in ids:
         try:
-            fn(current_user, fid, target)
+            fn(owner, fid, target)
             done += 1
         except (ValueError, PermissionError, QuotaError) as e:
             failed.append(str(e))
@@ -346,6 +351,7 @@ def batch_download():
     import zipfile
     import tempfile
 
+    owner = current_file_owner()
     ids = _parse_ids(request.args.getlist("ids"))
     if not ids:
         flash("未选择文件", "danger")
@@ -354,15 +360,15 @@ def batch_download():
     nodes = []
     for fid in ids:
         try:
-            nodes.append(file_service.get_owned_file(current_user, fid))
+            nodes.append(file_service.get_owned_file(owner, fid))
         except PermissionError:
             continue
     if not nodes:
         abort(404, "所选文件不存在")
 
-    total = sum(file_service.tree_size(current_user, n) for n in nodes)
+    total = sum(file_service.tree_size(owner, n) for n in nodes)
     try:
-        check_download(current_user, total)
+        check_download(owner, total)
     except QuotaError as e:
         flash(str(e), "danger")
         return redirect(request.referrer or url_for("files.index"))
@@ -385,7 +391,7 @@ def batch_download():
             pass
         raise
 
-    consume_traffic(current_user, total, "download")
+    consume_traffic(owner, total, "download")
     db.session.commit()
 
     @after_this_request
@@ -405,6 +411,7 @@ def batch_download():
 @files_bp.route("/api/upload/init", methods=["POST"])
 @login_required
 def upload_init():
+    owner = current_file_owner()
     data = request.get_json() or {}
     filename = data.get("filename") or ""
     total_size = int(data.get("total_size") or 0)
@@ -416,25 +423,25 @@ def upload_init():
         return jsonify(error="参数错误"), 400
 
     try:
-        check_upload(current_user, total_size)
+        check_upload(owner, total_size)
     except QuotaError as e:
         return jsonify(error=str(e)), 400
 
     # 秒传：md5 命中且文件实体存在
     if md5:
-        existing = File.query.filter_by(user_id=current_user.id, md5=md5, is_dir=False).first()
+        existing = File.query.filter_by(user_id=owner.id, md5=md5, is_dir=False).first()
         if existing and existing.storage_key and os.path.exists(
                 file_service.get_physical_path(existing.storage_key)):
             f = file_service.create_reference(
-                current_user, parent_id, filename, total_size,
+                owner, parent_id, filename, total_size,
                 mime=existing.mime, md5=md5, storage_key=existing.storage_key,
             )
-            consume_traffic(current_user, total_size, "upload")
+            consume_traffic(owner, total_size, "upload")
             db.session.commit()
             return jsonify(uploaded=True, fast=True, file_id=f.id)
 
     sess = UploadSession(
-        user_id=current_user.id, parent_id=parent_id, filename=filename,
+        user_id=owner.id, parent_id=parent_id, filename=filename,
         total_size=total_size, chunk_size=chunk_size, md5=md5,
     )
     db.session.add(sess)
@@ -445,10 +452,11 @@ def upload_init():
 @files_bp.route("/api/upload/chunk", methods=["POST"])
 @login_required
 def upload_chunk():
+    owner = current_file_owner()
     upload_id = request.form.get("upload_id")
     index = int(request.form.get("index"))
     chunk = request.files.get("chunk")
-    sess = UploadSession.query.filter_by(upload_id=upload_id, user_id=current_user.id).first()
+    sess = UploadSession.query.filter_by(upload_id=upload_id, user_id=owner.id).first()
     if sess is None or sess.status != "uploading":
         return jsonify(error="上传会话无效"), 400
     if chunk is None:
@@ -469,9 +477,10 @@ def upload_chunk():
 @files_bp.route("/api/upload/complete", methods=["POST"])
 @login_required
 def upload_complete():
+    owner = current_file_owner()
     data = request.get_json() or {}
     upload_id = data.get("upload_id")
-    sess = UploadSession.query.filter_by(upload_id=upload_id, user_id=current_user.id).first()
+    sess = UploadSession.query.filter_by(upload_id=upload_id, user_id=owner.id).first()
     if sess is None:
         return jsonify(error="上传会话无效"), 400
 
@@ -486,10 +495,10 @@ def upload_complete():
 
     try:
         f = file_service.save_chunked_file(
-            current_user, sess.parent_id, sess.filename, sess.total_size,
+            owner, sess.parent_id, sess.filename, sess.total_size,
             merged, md5=sess.md5, mime=None
         )
-        consume_traffic(current_user, sess.total_size, "upload")
+        consume_traffic(owner, sess.total_size, "upload")
         sess.status = "complete"
         sess.completed_at = utcnow()
         db.session.commit()
@@ -518,7 +527,8 @@ def shutil_rmtree(p):
 @files_bp.route("/trash")
 @login_required
 def trash():
-    items = file_service.list_trash(current_user)
+    owner = current_file_owner()
+    items = file_service.list_trash(owner)
     return render_template("files/trash.html", items=items)
 
 
@@ -526,7 +536,7 @@ def trash():
 @login_required
 def restore(file_id):
     try:
-        file_service.restore(current_user, file_id)
+        file_service.restore(current_file_owner(), file_id)
         db.session.commit()
         flash("已恢复", "success")
     except (ValueError, PermissionError) as e:
@@ -538,7 +548,7 @@ def restore(file_id):
 @login_required
 def purge(file_id):
     try:
-        file_service.hard_delete(current_user, file_id)
+        file_service.hard_delete(current_file_owner(), file_id)
         flash("已彻底删除", "success")
     except (ValueError, PermissionError) as e:
         flash(str(e), "danger")
@@ -548,6 +558,6 @@ def purge(file_id):
 @files_bp.route("/trash/empty", methods=["POST"])
 @login_required
 def empty_trash():
-    n = file_service.empty_trash(current_user)
+    n = file_service.empty_trash(current_file_owner())
     flash(f"回收站已清空（{n} 项）", "success")
     return redirect(url_for("files.trash"))

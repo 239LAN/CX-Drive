@@ -4,12 +4,14 @@ import os
 from flask import Flask
 
 from app.extensions import db, login_manager, bcrypt
-from config import Config
+from config import Config, load_site_config
 
 
 def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
+    # 站点名与功能开关以 config.yml 为准
+    app.config.update(load_site_config())
 
     # 确保存储目录存在
     os.makedirs(app.config["STORAGE_ROOT"], exist_ok=True)
@@ -54,13 +56,32 @@ def create_app(config_class=Config):
 
     @app.context_processor
     def inject_globals():
-        from app.utils.helpers import utcnow
-        return {"now": utcnow()}
+        from app.utils.helpers import utcnow, get_admin_view_user
+        return {
+            "now": utcnow(),
+            "admin_view_user": get_admin_view_user(),
+            "site_name": app.config["SITE_NAME"],
+            "project_name": app.config["PROJECT_NAME"],
+            "allow_register": app.config["ALLOW_REGISTER"],
+            "enable_preview": app.config["ENABLE_PREVIEW"],
+            "enable_share": app.config["ENABLE_SHARE"],
+            "enable_remote": app.config["ENABLE_REMOTE"],
+        }
 
     @app.errorhandler(PermissionError)
     def handle_permission_error(e):
         """文件不存在/无权访问统一返回 404，避免裸抛 500"""
         return "文件不存在或无权访问", 404
+
+    @app.after_request
+    def add_hsts_header(resp):
+        """HSTS 仅在 HTTPS 真正生效时下发（见 config.yml 的 https 段）"""
+        if app.config["HSTS_ENABLED"]:
+            resp.headers.setdefault(
+                "Strict-Transport-Security",
+                f"max-age={app.config['HSTS_MAX_AGE']}",
+            )
+        return resp
 
     # 初始化数据库与默认套餐
     with app.app_context():
@@ -68,7 +89,7 @@ def create_app(config_class=Config):
         _seed_plans()
 
     # 后台远程下载 Worker（每个进程一个轮询线程，任务由数据库乐观认领防重复）
-    if os.environ.get("CLOUDPAN_DISABLE_BG") != "1":
+    if os.environ.get("CLOUDPAN_DISABLE_BG") != "1" and app.config["ENABLE_REMOTE"]:
         from app.services import remote_service
         remote_service.start_worker(app)
 

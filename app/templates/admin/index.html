@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}管理后台 - 创想云盘{% endblock %}
+{% block title %}管理后台 - {{ site_name }}{% endblock %}
 {% block content %}
 <h4 class="mb-3"><i class="bi bi-gear"></i> 管理后台
     <span class="ms-2">
@@ -75,6 +75,9 @@
                     <td>{% if u.is_active %}<span class="badge bg-success">正常</span>{% else %}<span class="badge bg-secondary">禁用</span>{% endif %}</td>
                     <td>
                         <a href="{{ url_for('admin.user_detail', user_id=u.id) }}" class="btn btn-sm btn-outline-dark">详情</a>
+                        <form method="post" action="{{ url_for('admin.view_user_files', user_id=u.id) }}" class="d-inline">
+                            <button class="btn btn-sm btn-outline-success">查看文件</button>
+                        </form>
                         <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#balanceModal" data-id="{{ u.id }}" data-name="{{ u.username }}">改余额</button>
                         <button class="btn btn-sm btn-outline-warning" data-bs-toggle="modal" data-bs-target="#giftPlanModal" data-id="{{ u.id }}" data-name="{{ u.username }}">送会员</button>
                         <button class="btn btn-sm btn-outline-info" data-bs-toggle="modal" data-bs-target="#giftAddonModal" data-id="{{ u.id }}" data-name="{{ u.username }}">送叠加包</button>
@@ -86,6 +89,10 @@
                         </form>
                         <form method="post" action="{{ url_for('admin.toggle_user', user_id=u.id) }}" class="d-inline">
                             <button class="btn btn-sm btn-outline-secondary">{{ '禁用' if u.is_active else '启用' }}</button>
+                        </form>
+                        <form method="post" action="{{ url_for('admin.delete_user', user_id=u.id) }}" class="d-inline"
+                              onsubmit="return confirm('确定删除用户 {{ u.username }} 吗？该用户的全部文件与数据将被永久清除，且不可恢复！');">
+                            <button class="btn btn-sm btn-outline-danger">删除</button>
                         </form>
                         {% endif %}
                     </td>
