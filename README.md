@@ -12,7 +12,7 @@
 - **配额与会员**：容量、单文件大小、下载限速、月流量均可按套餐控制；支持叠加容量 / 流量包
 - **管理后台**：用户管理、套餐 / 叠加包管理、余额调整、会员赠送、统计面板
 - **安全设计**：密码哈希存储、分享密码防暴力破解（错误限次锁定）、外链仅限网页下载杜绝直链盗刷
-- **一键部署**：单文件安装包内嵌完整源码，Linux 上 `sudo bash install.sh` 完成全新安装或覆盖更新
+- **一键部署**：单文件安装包内嵌完整源码，Linux 上 `sudo bash CXDrive-release-<版本>.sh` 完成全新安装或覆盖更新
 - **自动更新**：每天 0 点检查 GitHub Release，发现新版本自动覆盖更新（可在 `config.yml` 关闭）；页脚展示当前版本号与更新提示
 
 ## 技术栈
@@ -44,8 +44,7 @@
 │   └── utils/              # 工具函数与 Jinja 过滤器
 ├── build_install.py        # 生成单文件安装包（输出到 dist/）
 ├── install-template.sh     # 安装脚本模板（构建器用）
-├── dist/                   # 构建产物：install.sh 与 CXDrive-release-<版本>.sh
-└── _smoke_run.py           # 回归冒烟测试
+└── dist/                   # 构建产物：CXDrive-release-<版本>.sh
 ```
 
 ## 本地开发
@@ -72,10 +71,10 @@ python app.py            # 浏览器打开 http://127.0.0.1:5000
 
 ### 方式一：单文件安装包（推荐）
 
-将构建产物 `install.sh` 上传到服务器后执行：
+将构建产物 `CXDrive-release-<版本>.sh` 上传到服务器后执行：
 
 ```bash
-sudo bash install.sh
+sudo bash CXDrive-release-<版本>.sh
 ```
 
 脚本会自动完成：安装系统依赖 → 创建运行用户 → 部署代码到 `/opt/cx-pan` → 生成密钥 `.env` → 创建虚拟环境并安装依赖 → 注册并启动 systemd 服务 `cx-pan`。
@@ -138,22 +137,12 @@ update:
 修改源码后，如需更新发布用的安装包：
 
 ```bash
-python build_install.py --release
-# 读取根目录 VERSION，输出 dist/CXDrive-release-<版本>.sh，直接作为 GitHub Release 附件上传
-
 python build_install.py
-# 输出 dist/install.sh（负载已包含最新源码，数据/密钥/开发残留自动排除）
+# 读取根目录 VERSION，输出 dist/CXDrive-release-<版本>.sh
+# 该文件既是服务器上的安装脚本，也直接作为 GitHub Release 附件上传（自动更新只认这个命名）
 ```
 
 发布新版本前请先修改根目录 [VERSION](VERSION)（页脚与自动更新的版本比对均以此为准）。
-
-## 冒烟测试
-
-```bash
-python _smoke_run.py
-```
-
-使用隔离的临时数据库与存储目录，覆盖用户端 / 分享外链 / 管理端共 39 项回归断言，全部通过即基础功能健康。
 
 ## 配置项
 

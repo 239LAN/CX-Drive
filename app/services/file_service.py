@@ -12,7 +12,7 @@ from app.models import File, User
 from app.services.quota_service import QuotaError, check_upload, effective_quota
 from app.utils.helpers import (
     safe_filename, gen_storage_key, utcnow, guess_mimetype,
-    check_upload_security, read_file_head, UPLOAD_SNIFF_LEN,
+    check_upload_security, read_file_head, extension_allowed, UPLOAD_SNIFF_LEN,
 )
 
 # 单个压缩包最多允许解压出的文件数（防止大量小文件撑爆数据库）
@@ -193,6 +193,10 @@ def rename(user: User, file_id, new_name):
     new_name = safe_filename(new_name)
     if new_name == f.name:
         return f
+    # 文件夹不受扩展名白名单约束，文件改名同样要过白名单，避免改名绕过上传限制
+    if not f.is_dir and not extension_allowed(new_name):
+        raise ValueError(f"不支持的文件类型 {os.path.splitext(new_name)[1].lower()}，"
+                         "仅允许文档、图片、音视频、压缩包等常见格式")
     if _sibling_conflict(user, f.parent if f.parent_id else None, new_name, exclude_id=f.id):
         raise ValueError("同级已存在同名文件或文件夹")
     f.name = new_name
@@ -531,7 +535,7 @@ def _write_extracted(user: User, parent, name: str, src, limit: int):
     name = safe_filename(name)
     storage_key = gen_storage_key(os.path.splitext(name)[1])
     dest = _storage_path(storage_key)
-    # 与上传走同一套安全校验，避免借解压绕过黑名单
+    # 与上传走同一套安全校验，避免借解压绕过白名单
     head = src.read(UPLOAD_SNIFF_LEN)
     check_upload_security(name, head)
 
@@ -564,8 +568,11 @@ def _write_extracted(user: User, parent, name: str, src, limit: int):
     return size, storage_key
 
 
-def extract_zip(user: User, file_id, parent_id=None) -> int:
-    """解压 zip 到目标目录，返回解压出的文件数"""
+def extract_zip(user: User, file_id, parent_id=None):
+    """解压 zip 到目标目录，返回 (解压出的文件数, 被跳过的条目名列表)
+
+    不在上传白名单内的条目（压缩包里的程序、脚本等）会被跳过并记录，不影响其余文件解压。
+    """
     f = _get_owned_file(user, file_id)
     if f.is_dir:
         raise ValueError("请选择 zip 压缩包文件")
@@ -589,6 +596,7 @@ def extract_zip(user: User, file_id, parent_id=None) -> int:
 
         dirs = {}
         created = []
+        skipped = []
         written = 0
         count = 0
         try:
@@ -596,9 +604,18 @@ def extract_zip(user: User, file_id, parent_id=None) -> int:
                 parts = _safe_zip_parts(info.filename)
                 if not parts:
                     continue
+                name = parts[-1]
+                if not extension_allowed(name):
+                    skipped.append(name)
+                    continue
                 target = _ensure_zip_dirs(user, parent, parts[:-1], dirs)
                 with zf.open(info) as src:
-                    size, key = _write_extracted(user, target, parts[-1], src, total - written)
+                    try:
+                        size, key = _write_extracted(user, target, name, src, total - written)
+                    except ValueError as e:
+                        # 内容嗅探不通过（伪装成普通文件的程序/脚本）同样跳过
+                        skipped.append(f"{name}（{e}）")
+                        continue
                 created.append(key)
                 written += size
                 count += 1
@@ -614,7 +631,7 @@ def extract_zip(user: User, file_id, parent_id=None) -> int:
             raise
 
     db.session.commit()
-    return count
+    return count, skipped
 
 
 def purge_user_data(user: User):

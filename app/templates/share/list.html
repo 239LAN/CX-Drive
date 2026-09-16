@@ -25,7 +25,7 @@
                         {% else %}<span class="badge bg-success">有效</span>{% endif %}
                     </td>
                     <td>
-                        <form method="post" action="{{ url_for('share.cancel', link_id=link.id) }}" onsubmit="return confirm('取消分享？')">
+                        <form method="post" action="{{ url_for('share.cancel', link_id=link.id) }}" data-confirm="取消分享？">
                             <button class="btn btn-sm btn-outline-danger">取消分享</button>
                         </form>
                     </td>

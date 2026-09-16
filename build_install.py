@@ -5,8 +5,7 @@
 输出在 Linux（systemd 发行版）上可直接执行的单文件安装脚本。
 
 用法:
-    python build_install.py                    # 输出 dist/install.sh
-    python build_install.py --release          # 输出 dist/CXDrive-release-<VERSION>.sh（GitHub Release 附件）
+    python build_install.py                    # 输出 dist/CXDrive-release-<VERSION>.sh
     python build_install.py -o dist/app.sh     # 指定输出文件名
 """
 import argparse
@@ -22,7 +21,6 @@ TEMPLATE = os.path.join(BASE, "install-template.sh")
 VERSION_FILE = os.path.join(BASE, "VERSION")
 # 产物统一放在 dist/ 目录，便于管理（该目录不参与打包，也不部署到服务器）
 DIST_DIR = os.path.join(BASE, "dist")
-DEFAULT_OUT = os.path.join(DIST_DIR, "install.sh")
 
 BEGIN = "# CX_DRIVE_BEGIN"
 END = "# CX_DRIVE_END"
@@ -81,20 +79,21 @@ def inject_payload(template: str, payload: bytes) -> str:
     return "".join(out)
 
 
+def release_name() -> str:
+    """发布产物文件名：GitHub Release 附件与自动更新均依赖该命名"""
+    return f"CXDrive-release-{read_version()}.sh"
+
+
 def main():
     ap = argparse.ArgumentParser(description="生成创想云盘单文件安装包")
     ap.add_argument("-o", "--output", default=None,
-                    help="输出文件名（默认 dist/install.sh）")
-    ap.add_argument("--release", action="store_true",
-                    help="生成发布附件 dist/CXDrive-release-<VERSION>.sh")
+                    help="输出文件名（默认 dist/CXDrive-release-<VERSION>.sh）")
     args = ap.parse_args()
 
     if args.output:
         output = args.output
-    elif args.release:
-        output = os.path.join(DIST_DIR, f"CXDrive-release-{read_version()}.sh")
     else:
-        output = DEFAULT_OUT
+        output = os.path.join(DIST_DIR, release_name())
 
     with open(TEMPLATE, encoding="utf-8") as fh:
         template = fh.read()

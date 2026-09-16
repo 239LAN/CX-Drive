@@ -91,7 +91,7 @@
                             <button class="btn btn-sm btn-outline-secondary">{{ '禁用' if u.is_active else '启用' }}</button>
                         </form>
                         <form method="post" action="{{ url_for('admin.delete_user', user_id=u.id) }}" class="d-inline"
-                              onsubmit="return confirm('确定删除用户 {{ u.username }} 吗？该用户的全部文件与数据将被永久清除，且不可恢复！');">
+                              data-confirm="确定删除用户 {{ u.username }} 吗？该用户的全部文件与数据将被永久清除，且不可恢复！">
                             <button class="btn btn-sm btn-outline-danger">删除</button>
                         </form>
                         {% endif %}

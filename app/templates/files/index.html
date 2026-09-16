@@ -131,7 +131,7 @@
                         <a href="{{ url_for('preview.view', file_id=f.id) }}" class="btn btn-sm btn-outline-info" title="预览"><i class="bi bi-eye"></i></a>
                         {% endif %}
                         {% if f.name.lower().endswith('.zip') %}
-                        <form method="post" action="{{ url_for('files.extract', file_id=f.id) }}" class="d-inline" onsubmit="return confirm('解压到当前目录？')">
+                        <form method="post" action="{{ url_for('files.extract', file_id=f.id) }}" class="d-inline" data-confirm="解压到当前目录？">
                             <button class="btn btn-sm btn-outline-success" title="解压到当前目录"><i class="bi bi-file-zip"></i></button>
                         </form>
                         {% endif %}
@@ -142,7 +142,7 @@
                         {% if enable_share %}
                         <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#shareModal" data-id="{{ f.id }}" title="分享"><i class="bi bi-share"></i></button>
                         {% endif %}
-                        <form method="post" action="{{ url_for('files.delete', file_id=f.id) }}" class="d-inline" onsubmit="return confirm('确定移入回收站？')">
+                        <form method="post" action="{{ url_for('files.delete', file_id=f.id) }}" class="d-inline" data-confirm="确定移入回收站？">
                             <button class="btn btn-sm btn-outline-danger" title="删除"><i class="bi bi-trash"></i></button>
                         </form>
                         <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#detailModal"
@@ -312,15 +312,15 @@ document.getElementById('batchClearBtn').addEventListener('click', () => {
     document.getElementById('checkAll').checked = false;
     updateBatchBar();
 });
-document.getElementById('batchDeleteBtn').addEventListener('click', () => {
+document.getElementById('batchDeleteBtn').addEventListener('click', async () => {
     const ids = getChecked();
     if (!ids.length) return;
-    if (!confirm(`确定将选中的 ${ids.length} 项移入回收站？`)) return;
+    if (!(await cxConfirm(`确定将选中的 ${ids.length} 项移入回收站？`, { danger: true }))) return;
     const fd = new FormData();
     ids.forEach(id => fd.append('ids', id));
     fetch('/files/batch/delete', { method: 'POST', body: fd })
         .then(() => location.reload())
-        .catch(() => alert('操作失败'));
+        .catch(() => cxAlert('操作失败'));
 });
 document.getElementById('batchDownloadBtn').addEventListener('click', () => {
     const ids = getChecked();
@@ -389,7 +389,7 @@ function saveClip(clip) {
 }
 function setClip(mode) {
     const ids = getChecked();
-    if (!ids.length) { alert('请先勾选要操作的条目'); return; }
+    if (!ids.length) { cxAlert('请先勾选要操作的条目'); return; }
     saveClip({ ids, mode, source: CURRENT_DIR });
     document.querySelectorAll('.row-check').forEach(cb => cb.checked = false);
     document.getElementById('checkAll').checked = false;
@@ -413,13 +413,13 @@ document.getElementById('pasteBtn').addEventListener('click', async () => {
             const msg = (data.failed && data.failed.length)
                 ? `成功 ${data.done} 项，失败 ${data.failed.length} 项（如：${data.failed[0]}）`
                 : `操作完成（${data.done} 项）`;
-            alert(msg);
+            await cxAlert(msg);
             location.reload();
         } else {
-            alert(data.error || '粘贴失败，请重试');
+            await cxAlert(data.error || '粘贴失败，请重试');
         }
     } catch (e) {
-        alert('粘贴失败：网络错误');
+        await cxAlert('粘贴失败：网络错误');
     }
 });
 
@@ -445,7 +445,7 @@ document.querySelectorAll('[data-bs-target="#detailModal"]').forEach(btn => {
 document.getElementById('dCopyMd5').addEventListener('click', () => {
     const t = document.getElementById('dMd5').textContent || '';
     if (!t || t === '-') return;
-    navigator.clipboard?.writeText(t).then(() => alert('MD5 已复制')).catch(() => alert('复制失败'));
+    navigator.clipboard?.writeText(t).then(() => cxAlert('MD5 已复制')).catch(() => cxAlert('复制失败'));
 });
 renderClip();
 
@@ -492,7 +492,7 @@ document.getElementById('uploadInput').addEventListener('change', async (e) => {
             }
         } catch (err) {
             status.textContent = `上传失败：${err.message}`;
-            break;
+            return;   // 保留失败提示，不刷新页面（刷新会清掉提示）
         }
     }
     status.textContent = '全部完成';
@@ -503,7 +503,16 @@ async function uploadSmallFile(file, progressBar, status) {
     const fd = new FormData();
     fd.append('file', file);
     fd.append('parent_id', document.querySelector('#uploadForm input[name=parent_id]').value);
-    await fetch('/files/upload', { method: 'POST', body: fd });
+    // 带上该请求头，服务端才会直接返回 JSON 错误（否则是 flash + 重定向，被 fetch 丢弃）
+    const res = await fetch('/files/upload', {
+        method: 'POST',
+        headers: {'X-Requested-With': 'XMLHttpRequest'},
+        body: fd
+    });
+    if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || `上传失败（HTTP ${res.status}）`);
+    }
     progressBar.style.width = '100%';
 }
 

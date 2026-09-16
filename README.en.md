@@ -12,7 +12,7 @@ CX-Drive is an out-of-the-box, self-hostable lightweight cloud drive system. Bui
 - **Quotas & membership**: storage, per-file size limit, download throttle, and monthly traffic are all controlled per plan; optional traffic / storage add-ons
 - **Admin console**: user management, plan / add-on management, balance adjustment, membership gifting, statistics dashboard
 - **Security by design**: hashed passwords, brute-force lockout on share passwords (per IP + share), external links served only through the web page to prevent hot-linking
-- **One-command deployment**: the standalone installer embeds the full source code; `sudo bash install.sh` performs a fresh install or an in-place upgrade
+- **One-command deployment**: the standalone installer embeds the full source code; `sudo bash CXDrive-release-<version>.sh` performs a fresh install or an in-place upgrade
 
 ## Tech Stack
 
@@ -42,8 +42,7 @@ cx-drive/
 ├── build_install.py        # Builds the standalone installer (outputs to dist/)
 ├── install-template.sh     # Installer script template (used by the builder)
 ├── VERSION                 # Version number (footer + auto-update comparison)
-├── dist/                   # Build artifacts: install.sh and CXDrive-release-<version>.sh
-└── _smoke_run.py           # Regression smoke tests
+└── dist/                   # Build artifact: CXDrive-release-<version>.sh
 ```
 
 ## Local Development
@@ -72,10 +71,10 @@ The installer auto-detects the package manager and installs dependencies, coveri
 
 ### Option 1: Standalone installer (recommended)
 
-Upload the build artifact `install.sh` to the server and run:
+Upload the build artifact `CXDrive-release-<version>.sh` to the server and run:
 
 ```bash
-sudo bash install.sh
+sudo bash CXDrive-release-<version>.sh
 ```
 
 The script automatically: installs system dependencies → creates the run user → deploys code to `/opt/cx-pan` → generates the `.env` secret → creates a virtualenv and installs dependencies → registers and starts the `cx-pan` systemd service.
@@ -139,23 +138,13 @@ update:
 After changing the source code, regenerate the release installer:
 
 ```bash
-python build_install.py --release
-# Reads VERSION and outputs dist/CXDrive-release-<version>.sh, ready to upload as a GitHub Release asset
-
 python build_install.py
-# Outputs dist/install.sh with the latest source embedded
-# (data / secrets / dev leftovers are excluded automatically)
+# Reads VERSION and outputs dist/CXDrive-release-<version>.sh
+# This single file is both the installer for the server and the GitHub Release asset
+# (auto-update only recognizes this exact naming pattern)
 ```
 
 Bump [VERSION](VERSION) before publishing a new release; the footer and the auto-update check both use it.
-
-## Smoke tests
-
-```bash
-python _smoke_run.py
-```
-
-Runs against an isolated temporary database and storage directory, covering 39 regression assertions across the user side / share links / admin console. All pass means the core functionality is healthy.
 
 ## Configuration
 

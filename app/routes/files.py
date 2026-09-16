@@ -78,9 +78,18 @@ def upload():
     owner = current_file_owner()
     parent_id = request.form.get("parent_id") or None
     f = request.files.get("file")
-    if f is None:
-        flash("未选择文件", "danger")
+    # 页面用 fetch 调用本接口，flash + 重定向的响应体会被丢弃导致用户看不到提示，
+    # 故对 AJAX 请求直接返回 JSON 错误
+    ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
+
+    def fail(message: str):
+        if ajax:
+            return jsonify(error=message), 400
+        flash(message, "danger")
         return redirect(request.referrer or url_for("files.index"))
+
+    if f is None:
+        return fail("未选择文件")
 
     # 读取文件大小用于容量校验
     f.seek(0, os.SEEK_END)
@@ -90,8 +99,7 @@ def upload():
     try:
         check_upload(owner, size)
     except QuotaError as e:
-        flash(str(e), "danger")
-        return redirect(request.referrer or url_for("files.index"))
+        return fail(str(e))
 
     try:
         file_service.save_uploaded_file(
@@ -99,10 +107,12 @@ def upload():
         )
         consume_traffic(owner, size, "upload")
         db.session.commit()
-        flash("上传成功", "success")
     except Exception as e:
         db.session.rollback()
-        flash(f"上传失败：{e}", "danger")
+        return fail(f"上传失败：{e}")
+    if ajax:
+        return jsonify(ok=True)
+    flash("上传成功", "success")
     return redirect(request.referrer or url_for("files.index"))
 
 
@@ -433,8 +443,13 @@ def extract(file_id):
             flash(str(e), "danger")
             return redirect(request.referrer or url_for("files.index"))
     try:
-        count = file_service.extract_zip(owner, file_id, parent_id)
-        flash(f"解压完成，共 {count} 个文件", "success")
+        count, skipped = file_service.extract_zip(owner, file_id, parent_id)
+        if skipped:
+            shown = "、".join(skipped[:5])
+            more = f" 等 {len(skipped)} 个" if len(skipped) > 5 else ""
+            flash(f"解压完成，共 {count} 个文件；已跳过不支持的 {shown}{more}", "warning")
+        else:
+            flash(f"解压完成，共 {count} 个文件", "success")
     except (ValueError, PermissionError, QuotaError) as e:
         flash(str(e), "danger")
     return redirect(request.referrer or url_for("files.index"))

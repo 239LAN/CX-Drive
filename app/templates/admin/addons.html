@@ -28,7 +28,7 @@
                                 data-id="{{ a.id }}" data-type="{{ a.type }}" data-name="{{ a.name }}"
                                 data-amount="{{ (a.amount_bytes / 1024**3)|round(2) }}"
                                 data-price="{{ a.price }}" data-days="{{ a.duration_days }}" data-sort="{{ a.sort }}">编辑</button>
-                        <form method="post" action="{{ url_for('admin.addon_delete', pkg_id=a.id) }}" class="d-inline" onsubmit="return confirm('确定删除该叠加包？')">
+                        <form method="post" action="{{ url_for('admin.addon_delete', pkg_id=a.id) }}" class="d-inline" data-confirm="确定删除该叠加包？">
                             <button class="btn btn-sm btn-outline-danger">删除</button>
                         </form>
                     </td>

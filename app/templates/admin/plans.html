@@ -40,7 +40,7 @@
                                 data-traffic="{{ (p.monthly_traffic_bytes / 1024**3)|round(2) if p.monthly_traffic_bytes else 0 }}"
                                 data-preview="{{ 1 if p.allow_preview else 0 }}" data-sort="{{ p.sort }}">编辑</button>
                         {% if p.name != 'free' %}
-                        <form method="post" action="{{ url_for('admin.plan_delete', plan_id=p.id) }}" class="d-inline" onsubmit="return confirm('确定删除该套餐？')">
+                        <form method="post" action="{{ url_for('admin.plan_delete', plan_id=p.id) }}" class="d-inline" data-confirm="确定删除该套餐？">
                             <button class="btn btn-sm btn-outline-danger">删除</button>
                         </form>
                         {% endif %}

@@ -79,16 +79,54 @@ def content_disposition(filename: str) -> str:
     return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(filename, safe="")}'
 
 
-# 禁止上传的可执行文件与脚本类扩展名
-DANGEROUS_EXTS = {
-    # Windows / macOS / Linux 可执行文件与动态库
-    ".exe", ".dll", ".com", ".scr", ".msi", ".cpl", ".sys", ".drv", ".so", ".dylib",
-    # 脚本与快捷方式
-    ".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".hta", ".lnk", ".reg", ".wsf",
-    ".sh", ".bash", ".py", ".pl", ".rb", ".jar",
-    # Web 服务端脚本（避免文件被误部署后执行）
-    ".php", ".php3", ".php4", ".php5", ".phtml", ".pht", ".phar",
-    ".asp", ".aspx", ".ashx", ".asmx", ".jsp", ".jspx", ".cgi",
+# 允许上传的扩展名白名单：只有明确列出的类型可以通过校验。
+# 可执行文件、动态库、脚本与服务端脚本（exe/dll/so/sh/bat/ps1/py/pl/rb/jar/php/jsp/cgi
+# 等）、安装包（msi/deb/rpm/dmg/pkg/apk/ipa 等）一律不在白名单内，因此不可上传。
+ALLOWED_EXTS = {
+    # 文档与电子书
+    ".pdf", ".doc", ".docx", ".docm", ".dot", ".dotx", ".odt", ".rtf", ".txt", ".text",
+    ".md", ".markdown", ".mdx", ".tex", ".latex", ".bib", ".pages", ".wps", ".xps", ".oxps",
+    ".hwp", ".hwpx", ".caj", ".epub", ".mobi", ".azw", ".azw3", ".fb2", ".djvu", ".cbz", ".cbr",
+    # 字幕、日历、联系人
+    ".srt", ".ass", ".ssa", ".vtt", ".lrc", ".sub", ".ics", ".vcf",
+    # 表格与结构化数据
+    ".xls", ".xlsx", ".xlsm", ".xlsb", ".xlt", ".xltx", ".ods", ".fods", ".numbers", ".et",
+    ".csv", ".tsv", ".psv", ".json", ".jsonl", ".ndjson", ".xml", ".yaml", ".yml", ".toml",
+    ".ini", ".cfg", ".conf", ".properties", ".sql", ".db", ".db3", ".sqlite", ".sqlite3",
+    ".mdb", ".accdb", ".dbf", ".parquet", ".avro", ".orc", ".arrow", ".feather",
+    ".h5", ".hdf5", ".nc", ".mat", ".npy", ".npz", ".sav", ".dta", ".rdata", ".rda", ".por",
+    ".sas7bdat", ".xpt", ".dcm", ".fits",
+    # 演示文稿
+    ".ppt", ".pptx", ".pptm", ".pot", ".potx", ".pps", ".ppsx", ".odp", ".dps", ".key",
+    # 图片与设计稿
+    ".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".gif", ".bmp", ".dib", ".webp", ".tif", ".tiff",
+    ".svg", ".svgz", ".ico", ".cur", ".heic", ".heif", ".avif", ".apng", ".jxl", ".tga",
+    ".pcx", ".ppm", ".pgm", ".pbm", ".xbm", ".xpm", ".wbmp", ".emf", ".wmf",
+    ".raw", ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".srf", ".sr2", ".dng", ".orf", ".raf",
+    ".rw2", ".pef", ".srw", ".x3f", ".psd", ".psb", ".ai", ".eps", ".indd",
+    ".sketch", ".fig", ".xcf", ".afdesign", ".afphoto", ".cdr",
+    # 音频
+    ".mp3", ".wav", ".flac", ".aac", ".m4a", ".m4b", ".ogg", ".oga", ".opus", ".wma",
+    ".aiff", ".aif", ".aifc", ".ape", ".amr", ".awb", ".mid", ".midi", ".ac3", ".dts",
+    ".mka", ".mp2", ".mpga", ".au", ".wv", ".tak", ".tta", ".dsf", ".dff", ".caf", ".spx",
+    # 视频
+    ".mp4", ".m4v", ".mov", ".qt", ".avi", ".mkv", ".wmv", ".flv", ".f4v", ".webm",
+    ".mpg", ".mpeg", ".mpe", ".m2v", ".3gp", ".3g2", ".ts", ".m2ts", ".mts", ".ogv",
+    ".rm", ".rmvb", ".asf", ".vob", ".mxf", ".wtv", ".amv",
+    # 压缩包（zip 可在网盘内在线解压）
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".tbz", ".tbz2", ".xz", ".txz",
+    ".lz", ".lzma", ".lzo", ".lz4", ".zst", ".z", ".cab", ".arj", ".ace", ".sit", ".sitx", ".cpio",
+    # 光盘 / 磁盘镜像
+    ".iso", ".img", ".ima", ".nrg", ".mdf", ".mds", ".ccd", ".cue",
+    ".vhd", ".vhdx", ".vmdk", ".vdi", ".qcow2", ".wim",
+    # 字体
+    ".ttf", ".ttc", ".otf", ".woff", ".woff2", ".eot", ".fon", ".fnt",
+    ".pfb", ".pfm", ".afm", ".bdf", ".pcf", ".sfnt",
+    # 网页静态资源（服务端不解析，仅作为文件保存）
+    ".html", ".htm", ".xhtml", ".css", ".js", ".mjs", ".cjs", ".map",
+    ".scss", ".sass", ".less", ".styl",
+    # 备份文件
+    ".bak", ".backup", ".bkp", ".old", ".dump",
 }
 
 # 文件头特征：识别伪装成普通文件的程序或脚本
@@ -125,15 +163,21 @@ def sniff_upload_head(head: bytes) -> str:
     return ""
 
 
-def check_extension(filename: str):
-    """校验扩展名是否在黑名单内，命中抛 ValueError"""
+def extension_allowed(filename: str) -> bool:
+    """扩展名是否在白名单内；无扩展名时放行，交由文件头嗅探兜底"""
     ext = os.path.splitext(filename)[1].lower()
-    if ext in DANGEROUS_EXTS:
-        raise ValueError(f"出于安全考虑，禁止上传 {ext} 类型的文件")
+    return not ext or ext in ALLOWED_EXTS
+
+
+def check_extension(filename: str):
+    """白名单校验扩展名，不在白名单内抛 ValueError"""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext and ext not in ALLOWED_EXTS:
+        raise ValueError(f"不支持的文件类型 {ext}，仅允许上传文档、图片、音视频、压缩包等常见格式")
 
 
 def check_upload_security(filename: str, head: bytes):
-    """上传安全校验：扩展名黑名单 + 文件头嗅探，命中抛 ValueError"""
+    """上传安全校验：扩展名白名单 + 文件头嗅探，命中抛 ValueError"""
     check_extension(filename)
     label = sniff_upload_head(head)
     if label:
