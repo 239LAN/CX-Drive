@@ -10,6 +10,7 @@ import yaml
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = Path(os.environ.get("CLOUDPAN_CONFIG", str(BASE_DIR / "config.yml")))
+VERSION_FILE = Path(os.environ.get("CLOUDPAN_VERSION_FILE", str(BASE_DIR / "VERSION")))
 
 # 项目名：指向开源项目本身，固定标识；网站名（SITE_NAME）可由部署者自定义
 PROJECT_NAME = "创想云盘"
@@ -23,8 +24,31 @@ FEATURE_KEYS = {
     "enable_remote": "ENABLE_REMOTE",
 }
 
+# 自动更新默认来源（GitHub 仓库 owner/name）与默认开关
+UPDATE_REPO = "239LAN/CX-Drive"
+UPDATE_ENABLED = True
+# 公共 GitHub 代理：仅在直连 github.com / api.github.com 失败时回退使用；留空表示不使用
+UPDATE_PROXY = "https://v4.gh-proxy.org/"
+
 # HSTS 默认有效期：1 年（秒）
 HSTS_MAX_AGE = 31536000
+
+
+def read_version():
+    """读取根目录 VERSION 文件的版本号（形如 x.x.x），缺失时返回 0.0.0"""
+    try:
+        text = VERSION_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "0.0.0"
+    return text.splitlines()[0].strip() or "0.0.0"
+
+
+def normalize_proxy(value):
+    """GitHub 代理地址规范化：补全结尾的 /，留空表示不使用代理"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text if text.endswith("/") else text + "/"
 
 
 def _resolve_path(value):
@@ -77,6 +101,7 @@ def load_site_config(path=CONFIG_FILE):
     site = data.get("site") if isinstance(data.get("site"), dict) else {}
     features = data.get("features") if isinstance(data.get("features"), dict) else {}
     https = data.get("https") if isinstance(data.get("https"), dict) else {}
+    update = data.get("update") if isinstance(data.get("update"), dict) else {}
 
     project_name = str(project.get("name") or "").strip() or PROJECT_NAME
     cfg = {
@@ -84,6 +109,12 @@ def load_site_config(path=CONFIG_FILE):
         "PROJECT_NAME_EN": str(project.get("name_en") or "").strip() or PROJECT_NAME_EN,
         # 网站名留空时回退项目名，避免界面出现空白标题
         "SITE_NAME": str(site.get("name") or "").strip() or project_name,
+        "VERSION": read_version(),
+        # 自动更新：关闭后仍每日检查并在页脚提示，但不自动安装
+        "UPDATE_ENABLED": bool(update.get("enabled", UPDATE_ENABLED)),
+        "UPDATE_REPO": str(update.get("repo") or "").strip() or UPDATE_REPO,
+        # 直连 GitHub 失败时的回退代理，留空表示不使用
+        "UPDATE_PROXY": normalize_proxy(update.get("proxy", UPDATE_PROXY)),
     }
     for yml_key, cfg_key in FEATURE_KEYS.items():
         cfg[cfg_key] = bool(features.get(yml_key, True))
@@ -117,6 +148,16 @@ class Config:
     ENABLE_PREVIEW = True
     ENABLE_SHARE = True
     ENABLE_REMOTE = True
+
+    # 版本与自动更新：默认值，由 config.yml 的 update 段覆盖
+    VERSION = read_version()
+    UPDATE_ENABLED = UPDATE_ENABLED
+    UPDATE_REPO = UPDATE_REPO
+    UPDATE_PROXY = UPDATE_PROXY
+    # 更新工作目录：存放 status.json 与下载到的更新脚本
+    UPDATE_DIR = os.environ.get("CLOUDPAN_UPDATE_DIR", str(BASE_DIR / "instance" / "update"))
+    # 应用内触发安装时执行的命令（由安装脚本写入 sudoers 放行的固定路径）
+    UPDATE_TRIGGER = os.environ.get("CLOUDPAN_UPDATE_TRIGGER", "/usr/local/sbin/cx-pan-auto-update")
 
     # HTTPS 与 HSTS：默认值，由 config.yml 的 https 段覆盖
     HTTPS_ENABLED = False
@@ -155,7 +196,7 @@ class Config:
     # 会员权益（字节单位）
     DEFAULT_STORAGE_QUOTA = 10 * 1024 ** 3       # 免费 10GB
     DEFAULT_MAX_FILE_SIZE = 256 * 1024 ** 2      # 免费 256MB
-    DEFAULT_SPEED_LIMIT = 4 * 1024 ** 2          # 免费 4MB/s（字节/秒）
+    DEFAULT_SPEED_LIMIT = None                   # None = 不限速（登录用户默认不限）
     DEFAULT_MONTHLY_TRAFFIC = 10 * 1024 ** 3     # 免费 10GB/月
 
     # 到期锁定缓冲期

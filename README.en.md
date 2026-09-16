@@ -1,47 +1,48 @@
-# ChuangXiang Drive
+# CX-Drive（创想云盘）
 
-**English | [简体中文](README.md)**
+**[简体中文](README.md) | English**
 
-Chuangxiang Cloud Drive is an out-of-the-box, self-hostable lightweight cloud drive system. Built on Flask, it supports file management, share links, a recycle bin, membership plans, and an admin panel. A single command can complete deployment or in-place updates on mainstream Linux servers.
+CX-Drive is an out-of-the-box, self-hostable lightweight cloud drive system. Built with Flask, it supports file management, share links, recycle bin, membership plans, and an admin console. Deploy or upgrade on mainstream Linux servers with a single command.
 
 ## Features
 
-- **File management**: Folder directories, upload/download, search and sorting, rename / move / copy, batch operations, and a recycle bin to prevent accidental deletion
-- **Large file transfer**: Chunked upload + MD5 instant upload, resume-friendly
-- **Share links**: Share individual files or entire directories; supports access passwords, expiration dates, and download limits; visitors can browse and download without logging in (guest downloads are throttled to 1 MiB/s)
-- **Quotas and memberships**: Storage capacity, max file size, download speed limit, and monthly traffic can all be controlled by plan; add-on storage / traffic packages are supported
-- **Admin panel**: User management, plan / add-on package management, balance adjustments, membership grants, and a statistics dashboard
-- **Security design**: Hashed password storage, share password brute-force protection (lockout after too many failed attempts), and share links limited to web downloads to prevent direct-link abuse
-- **One-command deployment**: The single-file installer embeds the complete source code; on Linux, `sudo bash install.sh` completes a fresh install or in-place update
+- **File management**: folders, upload/download, search & sort, rename / move / copy, batch operations, recycle bin to prevent accidental deletion
+- **Large file transfer**: chunked upload with MD5 instant-upload (server-side dedup), resumable-friendly
+- **Share links**: share a single file or an entire folder; optional extraction password, expiry date, and download-count limits. Visitors can browse and download **without an account** (anonymous downloads throttled to 1 MiB/s)
+- **Quotas & membership**: storage, per-file size limit, download throttle, and monthly traffic are all controlled per plan; optional traffic / storage add-ons
+- **Admin console**: user management, plan / add-on management, balance adjustment, membership gifting, statistics dashboard
+- **Security by design**: hashed passwords, brute-force lockout on share passwords (per IP + share), external links served only through the web page to prevent hot-linking
+- **One-command deployment**: the standalone installer embeds the full source code; `sudo bash install.sh` performs a fresh install or an in-place upgrade
 
 ## Tech Stack
 
 - Python 3 + Flask + SQLAlchemy + Flask-Login
 - Bootstrap 5 (CDN) + Bootstrap Icons
-- SQLite (works out of the box; can be switched to MySQL / PostgreSQL)
-- Production deployment: Gunicorn + systemd (managed service name `cx-pan`)
+- SQLite out of the box (switchable to MySQL / PostgreSQL)
+- Production: Gunicorn + systemd (service name `cx-pan`)
 
-## Directory Structure
+## Project Layout
 
 ```
-Chuangxiang Cloud Drive/
-├── app.py                  # Development entry point (python app.py, port 5000)
+cx-drive/
+├── app.py                  # Dev entry point (python app.py, port 5000)
 ├── wsgi.py                 # Production entry point (gunicorn wsgi:app)
 ├── config.py               # Application configuration
 ├── requirements.txt        # Python dependencies
-├── gunicorn.conf.py        # Gunicorn configuration (default port 4280, overridable via .env)
-├── manage.py               # CLI: add/remove/query administrators
+├── gunicorn.conf.py        # Gunicorn config (default port 4280, override via .env)
+├── manage.py               # CLI: create/revoke/list admins
 ├── app/
-│   ├── __init__.py         # Application factory (create tables + initialize default plans)
-│   ├── models.py           # Data models (users/files/shares/orders/transactions...)
-│   ├── scheduler.py        # Scheduled tasks (recycle bin cleanup, etc.)
-│   ├── routes/             # Routes: auth / files / share / preview / billing / admin / main
-│   ├── services/           # Business services: files, quotas, billing
+│   ├── __init__.py         # App factory (creates tables + seeds default plans)
+│   ├── models.py           # Data models (users/files/shares/orders/ledger...)
+│   ├── scheduler.py        # Scheduled jobs (monthly traffic reset, daily update check, etc.)
+│   ├── routes/             # Blueprints: auth / files / share / preview / billing / admin / main
+│   ├── services/           # Business logic: files, quota, billing, remote download, auto-update
 │   ├── templates/          # Jinja2 templates
-│   └── utils/              # Utility functions and Jinja filters
-├── build_install.py        # Build single-file installer (outputs install.sh)
-├── install-template.sh     # Installer script template (used by builder)
-├── install.sh              # Single-file installer (build artifact, ready to deploy)
+│   └── utils/              # Helpers & Jinja filters
+├── build_install.py        # Builds the standalone installer (outputs to dist/)
+├── install-template.sh     # Installer script template (used by the builder)
+├── VERSION                 # Version number (footer + auto-update comparison)
+├── dist/                   # Build artifacts: install.sh and CXDrive-release-<version>.sh
 └── _smoke_run.py           # Regression smoke tests
 ```
 
@@ -51,23 +52,25 @@ Requires Python 3.10+.
 
 ```bash
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-python app.py            # Open http://127.0.0.1:5000 in your browser
+python app.py            # Open http://127.0.0.1:5000
 ```
 
-## Deploy to Linux (systemd Distributions)
+> The Tsinghua PyPI mirror is used in the example above; feel free to omit it if it is not needed in your region.
 
-Automatically detects the package manager and installs dependencies. Supports the following mainstream distributions:
+## Deploy on Linux (systemd distributions)
 
-| Distribution | Package manager | System dependencies |
+The installer auto-detects the package manager and installs dependencies, covering:
+
+| Distribution | Package manager | System packages |
 | --- | --- | --- |
 | Debian / Ubuntu | apt | python3 + venv + pip + rsync |
-| RHEL / CentOS Stream / AlmaLinux / Rocky / Fedora | dnf (yum on older versions) | python3 + pip + rsync |
+| RHEL / CentOS Stream / AlmaLinux / Rocky / Fedora | dnf (yum on legacy) | python3 + pip + rsync |
 | Arch Linux | pacman | python + pip + rsync |
 | openSUSE | zypper | python3 + pip + rsync |
 
-> Alpine (apk / OpenRC) is not supported yet — the script relies on systemd to manage the service; if you must use it, manually switch to rc-service or use a container.
+> Alpine (apk / OpenRC) is not supported yet — the installer relies on systemd for service management. If you must use Alpine, run it manually via rc-service or a container.
 
-### Method 1: Single-file installer (recommended)
+### Option 1: Standalone installer (recommended)
 
 Upload the build artifact `install.sh` to the server and run:
 
@@ -75,74 +78,103 @@ Upload the build artifact `install.sh` to the server and run:
 sudo bash install.sh
 ```
 
-The script automatically: installs system dependencies → creates a runtime user → deploys code to `/opt/cx-pan` → generates secrets in `.env` → creates a virtual environment and installs dependencies → registers and starts the systemd service `cx-pan`.
+The script automatically: installs system dependencies → creates the run user → deploys code to `/opt/cx-pan` → generates the `.env` secret → creates a virtualenv and installs dependencies → registers and starts the `cx-pan` systemd service.
 
-### Method 2: Install directly from source directory
+### Option 2: Install from the source tree
 
-Place the project source in any directory on the server and run:
+Place the source code anywhere on the server and run:
 
 ```bash
-sudo bash install-template.sh            # script and source in the same directory
+sudo bash install-template.sh            # When the script sits next to the source
 sudo bash install-template.sh /path/to/source
 ```
 
-### In-place Update
+### Upgrade in place
 
-**Run the same command again**. The database (`instance/`), user data (`storage/ uploads/`), and secrets (`.env`) are automatically preserved; only code and dependencies are updated, and the service is restarted.
+**Just run the same command again.** The database (`instance/`), user data (`storage/ uploads/`), and secrets (`.env`) are preserved automatically; only the code and dependencies are updated, then the service restarts.
 
-### First Use
+### First run
 
-1. Register an admin account on the page
-2. Promote it to administrator:
+1. Register an admin account on the web page.
+2. Promote it to admin:
 
 ```bash
 sudo /opt/cx-pan/venv/bin/python /opt/cx-pan/manage.py create-admin <your-username>
 ```
 
-### Common Operations Commands
+### Common operations
 
 ```bash
-systemctl status cx-pan                  # Check service status
+systemctl status cx-pan                  # Service status
 journalctl -u cx-pan -f                  # Follow logs in real time
 sudo /opt/cx-pan/venv/bin/python /opt/cx-pan/manage.py list-admin      # List admins
 sudo /opt/cx-pan/venv/bin/python /opt/cx-pan/manage.py revoke-admin <username>  # Revoke admin
 ```
 
-## Rebuilding the Single-file Installer
+### Auto-update
 
-After modifying the source, if you need to update the release installer:
+Every day at 00:00 (server local time) the service asks the GitHub Releases API for the latest version:
 
-```bash
-python build_install.py
-# Outputs install.sh; the payload includes the latest source (data/secrets/development leftovers are automatically excluded)
+1. When a newer version exists it downloads the release script `CXDrive-release-<version>.sh` (same name as the Release asset) to `/opt/cx-pan/instance/update/current.sh` and verifies its sha256;
+2. It then runs it as root in a separate systemd unit through the sudoers rule written by the installer (`/etc/sudoers.d/cx-pan-update`, allowing only `/usr/local/sbin/cx-pan-auto-update`), so restarting the service does not interrupt the upgrade;
+3. The database, user data, `.env` and `config.yml` are preserved; the update log is `/opt/cx-pan/instance/update/update.log`.
+
+If `github.com` / `api.github.com` is unreachable (common on servers inside China), it automatically
+falls back to the public GH proxy `https://v4.gh-proxy.org/` by prefixing the original URL
+(`https://v4.gh-proxy.org/https://github.com/.../CXDrive-release-<version>.sh`). It always tries the
+direct connection first and only then the proxy; if the proxy also fails the error is recorded and the
+previous update status is kept.
+
+Adjust it in `config.yml`:
+
+```yaml
+update:
+  enabled: true                          # false = never install automatically, still checks daily and hints in the footer
+  repo: 239LAN/CX-Drive                  # Update source (GitHub owner/name)
+  proxy: https://v4.gh-proxy.org/        # Fallback proxy used only when the direct connection fails; empty disables it
 ```
 
-## Smoke Tests
+## Rebuilding the standalone installer
+
+After changing the source code, regenerate the release installer:
+
+```bash
+python build_install.py --release
+# Reads VERSION and outputs dist/CXDrive-release-<version>.sh, ready to upload as a GitHub Release asset
+
+python build_install.py
+# Outputs dist/install.sh with the latest source embedded
+# (data / secrets / dev leftovers are excluded automatically)
+```
+
+Bump [VERSION](VERSION) before publishing a new release; the footer and the auto-update check both use it.
+
+## Smoke tests
 
 ```bash
 python _smoke_run.py
 ```
 
-Uses an isolated temporary database and storage directory, covering 39 regression assertions across the user side / share links / admin side. If all pass, basic functionality is healthy.
+Runs against an isolated temporary database and storage directory, covering 39 regression assertions across the user side / share links / admin console. All pass means the core functionality is healthy.
 
 ## Configuration
 
-After deployment, adjust via `/opt/cx-pan/.env`:
+Tune via `/opt/cx-pan/.env` after deployment:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `SECRET_KEY` | Randomly generated at install time | Session signing key; do not disclose |
+| `SECRET_KEY` | Randomly generated at install | Session signing secret; keep it private |
 | `CLOUDPAN_BIND` | `0.0.0.0:4280` | Listen address and port |
-| `CLOUDPAN_WORKERS` | Automatically calculated based on CPU | Number of Gunicorn processes |
+| `CLOUDPAN_WORKERS` | Auto (based on CPU count) | Number of Gunicorn workers |
 
 ## Notes
 
-- Recharge/top-up functionality must be integrated with a payment API yourself.
-- The frontend dependency (Bootstrap) is loaded via public CDN; for a fully intranet environment, download the static assets yourself and modify `app/templates/base.html`.
+- Recharge / top-up is not included; integrate your own payment API if you need it.
+- Frontend assets (Bootstrap) are loaded from a public CDN. For fully offline environments, download the static assets and update `app/templates/base.html`.
 - Not recommended for production use.
 
 ## License
 
-Chuangxiang Cloud Drive © 2026 [239LAN](https://github.com/239LAN), open-sourced under the **GNU Affero General Public License v3.0**; see [LICENSE](LICENSE).
+CX-Drive (创想云盘) © 2026 [239LAN](https://github.com/239LAN), released under the **GNU Affero General Public License v3.0**. See [LICENSE](LICENSE).
 
-Under AGPL-3.0: Anyone providing a network service based on this project (including secondary development or modified deployment) must also make the complete source code available to service users under the same license.
+Under AGPL-3.0: anyone providing a network service based on this project (including derivatives deployed after modification) must make the complete corresponding source code available to users of that service under the same license.

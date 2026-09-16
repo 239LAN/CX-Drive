@@ -108,10 +108,19 @@
         <a class="link-secondary text-decoration-none me-3" href="{{ url_for('main.privacy') }}">隐私政策</a>
         <a class="link-secondary text-decoration-none" href="{{ url_for('main.licenses') }}">开源软件授权许可证</a>
         <div class="mt-2">
-            {{ project_name }} · 基于
+            {{ project_name }} v{{ version }} · 基于
             <a class="link-secondary" href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL-3.0</a>
             开源
         </div>
+        {% if update_info.has_update %}
+        <div class="mt-1">
+            <a class="link-primary text-decoration-none"
+               href="https://github.com/{{ update_repo }}/releases/tag/v{{ update_info.latest }}"
+               target="_blank" rel="noopener">
+                <i class="bi bi-arrow-up-circle"></i> 有新版本 v{{ update_info.latest }}
+            </a>
+        </div>
+        {% endif %}
     </div>
 </footer>
 

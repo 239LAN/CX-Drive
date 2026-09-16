@@ -1,14 +1,22 @@
 """文件核心业务逻辑"""
 import os
 import shutil
+import tempfile
+import zipfile
 from datetime import datetime
 
 from flask import current_app
 
 from app.extensions import db
 from app.models import File, User
-from app.services.quota_service import QuotaError, effective_quota
-from app.utils.helpers import safe_filename, gen_storage_key, utcnow
+from app.services.quota_service import QuotaError, check_upload, effective_quota
+from app.utils.helpers import (
+    safe_filename, gen_storage_key, utcnow, guess_mimetype,
+    check_upload_security, read_file_head, UPLOAD_SNIFF_LEN,
+)
+
+# 单个压缩包最多允许解压出的文件数（防止大量小文件撑爆数据库）
+MAX_ZIP_ENTRIES = 2000
 
 
 def _storage_path(storage_key: str) -> str:
@@ -108,6 +116,10 @@ def _sibling_conflict(user, parent, name, exclude_id=None) -> bool:
 def save_uploaded_file(user: User, parent_id, filename, size, file_obj, md5=None, mime=None):
     """保存一个已校验的上传文件，返回 File"""
     filename = safe_filename(filename)
+    # 内容嗅探：读取头部特征后复位流，避免恶意文件落盘
+    head = file_obj.stream.read(UPLOAD_SNIFF_LEN)
+    file_obj.stream.seek(0)
+    check_upload_security(filename, head)
     parent = get_dir_by_id(user, parent_id)
     ext = os.path.splitext(filename)[1]
     storage_key = gen_storage_key(ext)
@@ -133,6 +145,7 @@ def save_uploaded_file(user: User, parent_id, filename, size, file_obj, md5=None
 def save_chunked_file(user: User, parent_id, filename, total_size, tmp_path, md5=None, mime=None):
     """将已合并分片的临时文件移动到正式存储"""
     filename = safe_filename(filename)
+    check_upload_security(filename, read_file_head(tmp_path))
     parent = get_dir_by_id(user, parent_id)
     ext = os.path.splitext(filename)[1]
     storage_key = gen_storage_key(ext)
@@ -157,6 +170,8 @@ def save_chunked_file(user: User, parent_id, filename, total_size, tmp_path, md5
 def create_reference(user: User, parent_id, filename, size, mime, md5, storage_key):
     """秒传：复用已有物理文件，在目标位置创建一条引用记录"""
     filename = safe_filename(filename)
+    # 复用物理文件前同样做安全校验，避免绕过上传检查
+    check_upload_security(filename, read_file_head(_storage_path(storage_key)))
     parent = get_dir_by_id(user, parent_id)
     f = File(
         user_id=user.id,
@@ -215,7 +230,7 @@ def copy(user: User, file_id, target_parent_id):
     target = get_dir_by_id(user, target_parent_id)
     _ensure_not_inside(f, target)
 
-    total = tree_size(user, f)
+    total = tree_size(f)
     free = effective_quota(user)["free_storage"]
     if total > free:
         from app.utils.helpers import human_size
@@ -227,13 +242,13 @@ def copy(user: User, file_id, target_parent_id):
     return new_f
 
 
-def tree_size(user: User, node: File) -> int:
-    """目录树内未删除文件的总体积（复制/打包体积用）"""
+def tree_size(node: File) -> int:
+    """目录树内未删除文件的总体积（复制/转存/打包体积用）"""
     total = node.size if not node.is_dir else 0
     if node.is_dir:
-        for child in File.query.filter_by(user_id=user.id, parent_id=node.id).filter(
+        for child in File.query.filter_by(user_id=node.user_id, parent_id=node.id).filter(
                 File.deleted_at.is_(None)).all():
-            total += tree_size(user, child)
+            total += tree_size(child)
     return total
 
 
@@ -264,7 +279,7 @@ def _copy_node(user: User, src: File, target_parent: File, name: str):
                        name=name, is_dir=True)
         db.session.add(new_dir)
         db.session.flush()
-        for child in File.query.filter_by(user_id=user.id, parent_id=src.id).filter(
+        for child in File.query.filter_by(user_id=src.user_id, parent_id=src.id).filter(
                 File.deleted_at.is_(None)).all():
             _copy_node(user, child, new_dir, child.name)
         return new_dir
@@ -282,6 +297,26 @@ def _copy_node(user: User, src: File, target_parent: File, name: str):
                      storage_key=storage_key, md5=src.md5)
         db.session.add(new_f)
         return new_f
+
+
+def save_shared(user: User, src: File, parent_id=None) -> File:
+    """转存他人分享的文件/文件夹到自己的网盘（跨用户复制一份实体）"""
+    if src.deleted_at is not None:
+        raise ValueError("分享的文件已被删除")
+    parent = get_dir_by_id(user, parent_id)
+    if user.storage_locked:
+        raise QuotaError("容量已到期锁定，请续费后重试")
+
+    total = tree_size(src)
+    free = effective_quota(user)["free_storage"]
+    if total > free:
+        from app.utils.helpers import human_size
+        raise QuotaError(f"剩余空间不足，本次转存需 {human_size(total)}，剩余 {human_size(free)}")
+
+    name = _unique_copy_name(user, parent, src.name)
+    new_f = _copy_node(user, src, parent, name)
+    db.session.commit()
+    return new_f
 
 
 def soft_delete(user: User, file_id):
@@ -382,6 +417,204 @@ def active_children(node: File):
     """节点的未删除子节点（打包/目录遍历用）"""
     return File.query.filter_by(user_id=node.user_id, parent_id=node.id).filter(
         File.deleted_at.is_(None)).all()
+
+
+def add_dir_to_zip(zf: zipfile.ZipFile, node: File, prefix: str):
+    """把目录递归写入 zip（打包下载与在线压缩共用）"""
+    for child in active_children(node):
+        arc = prefix + child.name
+        if child.is_dir:
+            add_dir_to_zip(zf, child, arc + "/")
+        else:
+            p = _storage_path(child.storage_key)
+            if os.path.exists(p):
+                zf.write(p, arc)
+
+
+# ---------- 在线压缩 / 解压（体积上限与用户上传限制一致） ----------
+
+def _zip_name_for(nodes, name=None) -> str:
+    if name:
+        return safe_filename(name)
+    if len(nodes) == 1:
+        base = nodes[0].name if nodes[0].is_dir else os.path.splitext(nodes[0].name)[0]
+        return safe_filename(base) + ".zip"
+    return "files.zip"
+
+
+def compress(user: User, file_ids, parent_id=None, name=None) -> File:
+    """把选中的文件/文件夹压缩为一个 zip 存入网盘"""
+    parent = get_dir_by_id(user, parent_id)
+    nodes = []
+    for fid in file_ids:
+        try:
+            nodes.append(_get_owned_file(user, fid))
+        except (PermissionError, TypeError, ValueError):
+            continue
+    if not nodes:
+        raise ValueError("未选择可压缩的文件")
+
+    # 先按原始体积校验，避免做无用功；产物落盘后再按真实大小校验一次
+    check_upload(user, sum(tree_size(n) for n in nodes))
+
+    zip_name = _unique_copy_name(user, parent, _zip_name_for(nodes, name))
+    tmp_root = current_app.config["UPLOAD_TMP_ROOT"]
+    os.makedirs(tmp_root, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(suffix=".zip", dir=tmp_root)
+    os.close(fd)
+
+    storage_key = gen_storage_key(".zip")
+    dest = _storage_path(storage_key)
+    try:
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+            for n in nodes:
+                if n.is_dir:
+                    add_dir_to_zip(zf, n, n.name + "/")
+                else:
+                    p = _storage_path(n.storage_key)
+                    if os.path.exists(p):
+                        zf.write(p, n.name)
+        size = os.path.getsize(tmp_path)
+        check_upload(user, size)
+        shutil.move(tmp_path, dest)
+    except Exception:
+        for p in (tmp_path, dest):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+        raise
+
+    f = File(user_id=user.id, parent_id=parent.id if parent else None,
+             name=zip_name, is_dir=False, size=size,
+             mime="application/zip", storage_key=storage_key)
+    db.session.add(f)
+    db.session.commit()
+    return f
+
+
+def _safe_zip_parts(filename: str) -> list:
+    """规范化压缩包内条目路径，丢弃绝对路径与 .. 等穿越片段"""
+    parts = []
+    for p in (filename or "").replace("\\", "/").split("/"):
+        p = p.strip()
+        if not p or p in (".", ".."):
+            continue
+        p = safe_filename(p)
+        if p:
+            parts.append(p)
+    return parts
+
+
+def _ensure_zip_dirs(user: User, root, parts, cache):
+    """按压缩包内的路径逐级查找或创建目录"""
+    cur = root
+    for part in parts:
+        key = (cur.id if cur else None, part)
+        d = cache.get(key)
+        if d is None:
+            pid = cur.id if cur else None
+            d = File.query.filter_by(user_id=user.id, parent_id=pid, name=part,
+                                     is_dir=True).filter(File.deleted_at.is_(None)).first()
+            if d is None:
+                d = File(user_id=user.id, parent_id=pid, name=part, is_dir=True)
+                db.session.add(d)
+                db.session.flush()
+            cache[key] = d
+        cur = d
+    return cur
+
+
+def _write_extracted(user: User, parent, name: str, src, limit: int):
+    """把压缩包内的单个条目落盘并建记录，返回 (大小, storage_key)"""
+    name = safe_filename(name)
+    storage_key = gen_storage_key(os.path.splitext(name)[1])
+    dest = _storage_path(storage_key)
+    # 与上传走同一套安全校验，避免借解压绕过黑名单
+    head = src.read(UPLOAD_SNIFF_LEN)
+    check_upload_security(name, head)
+
+    size = 0
+    try:
+        with open(dest, "wb") as out:
+            if head:
+                out.write(head)
+                size = len(head)
+            while True:
+                chunk = src.read(256 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > limit:
+                    raise QuotaError("解压后体积超出可用额度（上限为您的单文件/容量限制）")
+                out.write(chunk)
+    except Exception:
+        if os.path.exists(dest):
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+        raise
+
+    f = File(user_id=user.id, parent_id=parent.id if parent else None,
+             name=_unique_copy_name(user, parent, name), is_dir=False, size=size,
+             mime=guess_mimetype(name), storage_key=storage_key)
+    db.session.add(f)
+    return size, storage_key
+
+
+def extract_zip(user: User, file_id, parent_id=None) -> int:
+    """解压 zip 到目标目录，返回解压出的文件数"""
+    f = _get_owned_file(user, file_id)
+    if f.is_dir:
+        raise ValueError("请选择 zip 压缩包文件")
+    path = _storage_path(f.storage_key)
+    if not os.path.exists(path):
+        raise ValueError("文件实体丢失")
+    if not zipfile.is_zipfile(path):
+        raise ValueError("该文件不是有效的 zip 压缩包")
+
+    parent = get_dir_by_id(user, parent_id)
+    with zipfile.ZipFile(path) as zf:
+        infos = [i for i in zf.infolist() if not i.is_dir()]
+        if not infos:
+            raise ValueError("压缩包内没有可解压的文件")
+        if len(infos) > MAX_ZIP_ENTRIES:
+            raise ValueError(f"压缩包内文件过多（超过 {MAX_ZIP_ENTRIES} 个）")
+
+        # 按声明的解压体积预校验（防 zip bomb），解压时再按实际写入量卡上限
+        total = sum(max(i.file_size, 0) for i in infos)
+        check_upload(user, total)
+
+        dirs = {}
+        created = []
+        written = 0
+        count = 0
+        try:
+            for info in infos:
+                parts = _safe_zip_parts(info.filename)
+                if not parts:
+                    continue
+                target = _ensure_zip_dirs(user, parent, parts[:-1], dirs)
+                with zf.open(info) as src:
+                    size, key = _write_extracted(user, target, parts[-1], src, total - written)
+                created.append(key)
+                written += size
+                count += 1
+        except Exception:
+            db.session.rollback()
+            for key in created:
+                p = _storage_path(key)
+                if os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+            raise
+
+    db.session.commit()
+    return count
 
 
 def purge_user_data(user: User):

@@ -19,7 +19,10 @@ from app.extensions import db
 from app.models import File, RemoteDownload, User
 from app.services import file_service
 from app.services.quota_service import consume_traffic, effective_quota
-from app.utils.helpers import gen_storage_key, human_size, safe_filename, utcnow
+from app.utils.helpers import (
+    gen_storage_key, human_size, safe_filename, utcnow,
+    check_upload_security, read_file_head,
+)
 
 # 套餐 -> 同时进行的远程下载任务数
 CONCURRENCY_BY_PLAN = {"free": 1, "vip": 3, "svip": 5}
@@ -325,6 +328,8 @@ def _finalize(task, written: int, md5hex: str, part: str):
     parent = file_service.get_dir_by_id(user, task.parent_id) if task.parent_id else None
     name = safe_filename(task.filename or "") or _guess_name(task.url, "download")
     name = _unique_name(user, parent, name)
+    # 远端内容落地前同样做安全校验，避免绕过上传限制
+    check_upload_security(name, read_file_head(part))
     ext = os.path.splitext(name)[1]
     storage_key = gen_storage_key(ext)
     dest = file_service.get_physical_path(storage_key)

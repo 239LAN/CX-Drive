@@ -13,6 +13,7 @@
 - **管理后台**：用户管理、套餐 / 叠加包管理、余额调整、会员赠送、统计面板
 - **安全设计**：密码哈希存储、分享密码防暴力破解（错误限次锁定）、外链仅限网页下载杜绝直链盗刷
 - **一键部署**：单文件安装包内嵌完整源码，Linux 上 `sudo bash install.sh` 完成全新安装或覆盖更新
+- **自动更新**：每天 0 点检查 GitHub Release，发现新版本自动覆盖更新（可在 `config.yml` 关闭）；页脚展示当前版本号与更新提示
 
 ## 技术栈
 
@@ -28,20 +29,22 @@
 ├── app.py                  # 开发入口（python app.py，端口 5000）
 ├── wsgi.py                 # 生产入口（gunicorn wsgi:app）
 ├── config.py               # 应用配置
+├── config.yml              # 站点配置（功能开关 / HTTPS / 自动更新）
+├── VERSION                 # 版本号（页脚展示与自动更新比对）
 ├── requirements.txt        # Python 依赖
 ├── gunicorn.conf.py        # Gunicorn 配置（端口默认 4280，可用 .env 覆盖）
 ├── manage.py               # 命令行：管理员增删/查询
 ├── app/
 │   ├── __init__.py         # 应用工厂（创建表 + 初始化默认套餐）
 │   ├── models.py           # 数据模型（用户/文件/分享/订单/流水…）
-│   ├── scheduler.py        # 定时任务（回收站清理等）
+│   ├── scheduler.py        # 定时任务（每月流量重置、每日 0 点检查更新等）
 │   ├── routes/             # 路由：auth / files / share / preview / billing / admin / main
-│   ├── services/           # 业务服务：文件、配额、计费
+│   ├── services/           # 业务服务：文件、配额、计费、远程下载、自动更新
 │   ├── templates/          # Jinja2 模板
 │   └── utils/              # 工具函数与 Jinja 过滤器
-├── build_install.py        # 生成单文件安装包（输出 install.sh）
+├── build_install.py        # 生成单文件安装包（输出到 dist/）
 ├── install-template.sh     # 安装脚本模板（构建器用）
-├── install.sh              # 单文件安装包（构建产物，可直接部署）
+├── dist/                   # 构建产物：install.sh 与 CXDrive-release-<版本>.sh
 └── _smoke_run.py           # 回归冒烟测试
 ```
 
@@ -108,14 +111,41 @@ sudo /opt/cx-pan/venv/bin/python /opt/cx-pan/manage.py list-admin      # 管理�
 sudo /opt/cx-pan/venv/bin/python /opt/cx-pan/manage.py revoke-admin <用户名>  # 撤销管理员
 ```
 
+### 自动更新
+
+服务每天 0 点（服务器本地时间）请求 GitHub Releases API 比对版本：
+
+1. 有新版本时下载发布脚本 `CXDrive-release-<版本>.sh`（与 Release 附件同名）到 `/opt/cx-pan/instance/update/current.sh`，并校验 sha256；
+2. 经安装脚本写入的 sudoers 规则（`/etc/sudoers.d/cx-pan-update`，仅放行 `/usr/local/sbin/cx-pan-auto-update`）以 root 在独立 systemd 单元中执行覆盖更新，避免重启服务时中断更新；
+3. 数据库、用户数据、`.env`、`config.yml` 均保留；更新日志见 `/opt/cx-pan/instance/update/update.log`。
+
+直连 `github.com` / `api.github.com` 失败时（例如国内服务器），会自动回退到公共 GH 代理
+`https://v4.gh-proxy.org/`，即把原地址拼在代理之后
+（`https://v4.gh-proxy.org/https://github.com/.../CXDrive-release-<版本>.sh`）。
+始终是「先直连，失败才走代理」，代理不可用时会记录错误并保留原有更新状态。
+
+在 `config.yml` 中调整：
+
+```yaml
+update:
+  enabled: true                          # false = 关闭自动安装，仍每天检查并在页脚提示新版本
+  repo: 239LAN/CX-Drive                  # 更新来源（GitHub 仓库 owner/name）
+  proxy: https://v4.gh-proxy.org/        # 直连失败时的回退代理，留空则禁用
+```
+
 ## 重新生成单文件安装包
 
 修改源码后，如需更新发布用的安装包：
 
 ```bash
+python build_install.py --release
+# 读取根目录 VERSION，输出 dist/CXDrive-release-<版本>.sh，直接作为 GitHub Release 附件上传
+
 python build_install.py
-# 输出 install.sh，负载已包含最新源码（数据/密钥/开发残留自动排除）
+# 输出 dist/install.sh（负载已包含最新源码，数据/密钥/开发残留自动排除）
 ```
+
+发布新版本前请先修改根目录 [VERSION](VERSION)（页脚与自动更新的版本比对均以此为准）。
 
 ## 冒烟测试
 

@@ -21,6 +21,8 @@
 #               与站点配置 (config.yml) 均会保留，不会丢失
 #   - HTTPS/HSTS：由 config.yml 的 https 段控制开关与证书路径；
 #               证书缺失时自动回退为 HTTP，HSTS 随之关闭
+#   - 自动更新：应用每天 0 点检查 GitHub Release（config.yml 的 update 段可关闭），
+#               发现新版本时下载发布脚本，经 sudoers 放行的入口以 root 覆盖更新
 # ============================================================
 set -euo pipefail
 
@@ -40,10 +42,10 @@ trap cleanup EXIT
 
 resolve_src() {
     # 单文件安装包：优先使用脚本内嵌的源码负载（由 build_install.py 生成）
-    if grep -q '^# CLOUDPAN_PAYLOAD_BEGIN$' "$0"; then
+    if grep -q '^# CX_DRIVE_BEGIN$' "$0"; then
         echo ">> 使用内嵌源码包"
         PAYLOAD_DIR="$(mktemp -d)"
-        sed -n '/^# CLOUDPAN_PAYLOAD_BEGIN$/,/^# CLOUDPAN_PAYLOAD_END$/p' "$0" \
+        sed -n '/^# CX_DRIVE_BEGIN$/,/^# CX_DRIVE_END$/p' "$0" \
             | sed '1d;$d' \
             | base64 -d | tar -xzf - -C "$PAYLOAD_DIR"
         SRC="$PAYLOAD_DIR"
@@ -128,6 +130,7 @@ EXCLUDES=(
     --exclude "instance" --exclude "storage" --exclude "uploads"
     --exclude ".env" --exclude "config.yml" --exclude "*.db"
     --exclude "install.sh" --exclude "install-template.sh" --exclude "cloudpan-install.sh"
+    --exclude "dist"
     --exclude "_smoke_run.py" --exclude "_smoke_tmp"
     --exclude "_chk_new.py" --exclude "_chk_tmp"
     --exclude "_rt_check.py" --exclude "_rt_tmp"
@@ -211,6 +214,60 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
+# ---------- 自动更新执行入口（应用内触发 + sudoers） ----------
+# 应用发现新版本后把发布脚本下载到 instance/update/current.sh，再以 cx-pan 身份
+# 执行下面的 wrapper（sudoers 仅放行这一条命令）；wrapper 通过 systemd-run 起独立
+# 单元，脱离 cx-pan.service 的 cgroup，避免更新脚本重启服务时自身被连带杀掉。
+echo ">> 配置自动更新执行入口"
+mkdir -p "$INSTALL_DIR/instance/update"
+cat > /usr/local/sbin/cx-pan-auto-update <<EOF
+#!/usr/bin/env bash
+# 创想云盘自动更新执行入口（由安装脚本生成，请勿手工修改）
+# 用法：cx-pan-auto-update      由应用经 sudo 调用，执行 $INSTALL_DIR/instance/update/current.sh
+set -euo pipefail
+INSTALL_DIR="${INSTALL_DIR}"
+UPDATE_DIR="\${INSTALL_DIR}/instance/update"
+SCRIPT="\${UPDATE_DIR}/current.sh"
+LOG="\${UPDATE_DIR}/update.log"
+
+if [ "\${1:-}" != "--run" ]; then
+    SR="\$(command -v systemd-run || true)"
+    if [ -n "\$SR" ]; then
+        exec "\$SR" --unit=cx-pan-update --collect --no-block \\
+            --property=Type=oneshot --property=RemainAfterExit=no "\$0" --run
+    fi
+    exec "\$0" --run
+fi
+
+mkdir -p "\$UPDATE_DIR"
+{
+    echo "===== \$(date '+%F %T') 自动更新开始 ====="
+    if [ ! -f "\$SCRIPT" ]; then
+        echo "未找到待执行的更新脚本：\$SCRIPT"
+        exit 1
+    fi
+    bash "\$SCRIPT"
+    echo "===== \$(date '+%F %T') 自动更新结束 ====="
+} >> "\$LOG" 2>&1
+rm -f "\$SCRIPT"
+EOF
+chown root:root /usr/local/sbin/cx-pan-auto-update
+chmod 750 /usr/local/sbin/cx-pan-auto-update
+
+cat > /etc/sudoers.d/cx-pan-update <<EOF
+# 创想云盘自动更新：仅允许 ${RUN_USER} 免密执行更新入口（且不带参数）
+${RUN_USER} ALL=(root) NOPASSWD: /usr/local/sbin/cx-pan-auto-update ""
+EOF
+chmod 440 /etc/sudoers.d/cx-pan-update
+if command -v visudo >/dev/null 2>&1; then
+    if ! visudo -cf /etc/sudoers.d/cx-pan-update >/dev/null; then
+        rm -f /etc/sudoers.d/cx-pan-update
+        echo "警告：sudoers 规则校验失败，已移除；自动更新将无法安装（仍会每日检查并提示）"
+    fi
+fi
+command -v sudo >/dev/null 2>&1 || \
+    echo "警告：未检测到 sudo，自动更新将无法安装（仍会每日检查并在页脚提示）"
+
 chown -R "${RUN_USER}:${RUN_USER}" "$INSTALL_DIR"
 systemctl daemon-reload
 systemctl enable "$SERVICE" >/dev/null 2>&1 || true
@@ -245,5 +302,5 @@ fi
 # 以下为内嵌源码包负载，由 build_install.py 生成，请勿手工编辑
 # ============================================================
 exit 0
-# CLOUDPAN_PAYLOAD_BEGIN
-# CLOUDPAN_PAYLOAD_END
+# CX_DRIVE_BEGIN
+# CX_DRIVE_END

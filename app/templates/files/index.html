@@ -85,6 +85,10 @@
             <button class="btn btn-sm btn-outline-danger" id="batchDeleteBtn"><i class="bi bi-trash"></i> 移入回收站</button>
             <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#batchMoveModal"><i class="bi bi-arrows-move"></i> 移动到…</button>
             <button class="btn btn-sm btn-outline-primary" id="batchDownloadBtn"><i class="bi bi-file-earmark-zip"></i> 打包下载</button>
+            <form method="post" action="{{ url_for('files.compress') }}" class="d-inline" id="batchCompressForm">
+                <input type="hidden" name="parent_id" value="{{ parent.id if parent and not search else '' }}">
+                <button class="btn btn-sm btn-outline-success"><i class="bi bi-file-zip"></i> 压缩为 ZIP</button>
+            </form>
             <button class="btn btn-sm btn-link ms-auto" id="batchClearBtn">取消选择</button>
         </div>
     </div>
@@ -125,6 +129,11 @@
                         <a href="{{ url_for('files.download', file_id=f.id) }}" class="btn btn-sm btn-outline-primary" title="下载"><i class="bi bi-download"></i></a>
                         {% if q.allow_preview and enable_preview %}
                         <a href="{{ url_for('preview.view', file_id=f.id) }}" class="btn btn-sm btn-outline-info" title="预览"><i class="bi bi-eye"></i></a>
+                        {% endif %}
+                        {% if f.name.lower().endswith('.zip') %}
+                        <form method="post" action="{{ url_for('files.extract', file_id=f.id) }}" class="d-inline" onsubmit="return confirm('解压到当前目录？')">
+                            <button class="btn btn-sm btn-outline-success" title="解压到当前目录"><i class="bi bi-file-zip"></i></button>
+                        </form>
                         {% endif %}
                         {% endif %}
                         <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#renameModal" data-id="{{ f.id }}" data-name="{{ f.name }}" title="重命名"><i class="bi bi-pencil"></i></button>
@@ -329,6 +338,17 @@ document.getElementById('batchMoveForm').addEventListener('submit', () => {
         form.appendChild(inp);
     });
 });
+document.getElementById('batchCompressForm').addEventListener('submit', (e) => {
+    const form = e.target;
+    const ids = getChecked();
+    if (!ids.length) { e.preventDefault(); return; }
+    form.querySelectorAll('input[name="ids"]').forEach(i => i.remove());
+    ids.forEach(id => {
+        const inp = document.createElement('input');
+        inp.type = 'hidden'; inp.name = 'ids'; inp.value = id;
+        form.appendChild(inp);
+    });
+});
 
 // 剪贴板：复制/剪切 -> 目标目录粘贴（Windows 风格，跨目录）
 const CURRENT_DIR = {{ (parent.id if parent and not search else 'null') }};
@@ -501,6 +521,9 @@ async function uploadLargeFile(file, progressBar, status) {
         })
     });
     const initData = await initRes.json();
+    if (!initRes.ok) {
+        throw new Error(initData.error || '上传初始化失败');
+    }
     if (initData.fast) {
         status.textContent = '秒传成功';
         progressBar.style.width = '100%';
@@ -516,17 +539,25 @@ async function uploadLargeFile(file, progressBar, status) {
         fd.append('upload_id', uploadId);
         fd.append('index', index);
         fd.append('chunk', chunk);
-        await fetch('/api/upload/chunk', { method: 'POST', body: fd });
+        const chunkRes = await fetch('/api/upload/chunk', { method: 'POST', body: fd });
+        if (!chunkRes.ok) {
+            const d = await chunkRes.json().catch(() => ({}));
+            throw new Error(d.error || '分片上传失败');
+        }
         offset += CHUNK_SIZE;
         index++;
         progressBar.style.width = Math.min(100, Math.round(offset / file.size * 100)) + '%';
     }
 
-    await fetch('/api/upload/complete', {
+    const doneRes = await fetch('/api/upload/complete', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ upload_id: uploadId })
     });
+    if (!doneRes.ok) {
+        const d = await doneRes.json().catch(() => ({}));
+        throw new Error(d.error || '文件合并失败');
+    }
 }
 
 async function simpleHash(str) {

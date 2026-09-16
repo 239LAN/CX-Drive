@@ -41,3 +41,17 @@ https:
   keyfile: ""
   hsts: true               # 下发 Strict-Transport-Security 响应头
   hsts_max_age: 31536000   # HSTS 有效期（秒），默认 1 年
+
+# ---- 自动更新 ----
+# 说明：
+#   - 每天 0 点请求 GitHub Releases API 比对版本；发现新版本时下载发布脚本
+#     （CXDrive-release-<版本>.sh），校验 sha256 后以 root 执行覆盖更新；
+#   - 覆盖更新会保留 instance/（数据库）、storage/ uploads/（用户数据）、
+#     .env（密钥）与 config.yml（本文件）；
+#   - enabled 改为 false 时不再自动安装，但仍会每天检查，并在页脚提示有新版本；
+#   - proxy 为公共 GitHub 代理，仅在直连 github.com / api.github.com 失败时
+#     才回退使用（例如国内服务器无法访问 GitHub）；留空表示不使用代理。
+update:
+  enabled: true                          # true 自动安装 / false 仅检查并提示
+  repo: 239LAN/CX-Drive                  # 更新来源（GitHub 仓库 owner/name）
+  proxy: https://v4.gh-proxy.org/        # 直连失败时的回退代理，留空则禁用

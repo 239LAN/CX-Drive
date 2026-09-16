@@ -15,7 +15,10 @@ from app.services.quota_service import (
     QuotaError, check_upload, check_download, get_speed_limit,
     consume_traffic, effective_quota,
 )
-from app.utils.helpers import utcnow, current_file_owner
+from app.utils.helpers import (
+    utcnow, current_file_owner, safe_filename, check_extension,
+    content_disposition, guess_mimetype,
+)
 
 files_bp = Blueprint("files", __name__)
 
@@ -114,45 +117,48 @@ def download(file_id):
 
 
 def _download_file(owner, f: File):
-    try:
-        check_download(owner, f.size)
-    except QuotaError as e:
-        flash(str(e), "danger")
-        return redirect(request.referrer or url_for("files.index"))
-
     path = file_service.get_physical_path(f.storage_key)
     if not os.path.exists(path):
         abort(404, "文件实体丢失")
 
-    consume_traffic(owner, f.size, "download")
+    # 一律以真实文件大小为准：库中记录可能过期，浏览器会按 Content-Length 校验
+    size = os.path.getsize(path)
+
+    try:
+        check_download(owner, size)
+    except QuotaError as e:
+        flash(str(e), "danger")
+        return redirect(request.referrer or url_for("files.index"))
+
+    consume_traffic(owner, size, "download")
     db.session.commit()
 
     limit = get_speed_limit(owner)  # None = 不限
-    return _stream_file(path, f.name, f.size, limit)
+    if limit:
+        resp = _stream_file(path, limit)
+        resp.headers["Content-Type"] = guess_mimetype(f.name)
+    else:
+        # 不限速时交给 send_file：自带正确的 Content-Length/ETag/Last-Modified/Range
+        resp = send_file(path, mimetype=guess_mimetype(f.name), as_attachment=True,
+                         download_name=f.name)
+    resp.headers["Content-Disposition"] = content_disposition(f.name)
+    return resp
 
 
-def _stream_file(path, download_name, size, speed_limit=None):
-    """带限速的文件流式响应"""
+def _stream_file(path, speed_limit, chunk=256 * 1024):
+    """带限速的文件流式响应（限速时无法交给 send_file 处理）"""
     def generate():
-        chunk = 256 * 1024
         with open(path, "rb") as fh:
             while True:
                 data = fh.read(chunk)
                 if not data:
                     break
                 yield data
-                if speed_limit:
-                    time.sleep(len(data) / speed_limit)
+                time.sleep(len(data) / speed_limit)
 
     resp = Response(generate(), direct_passthrough=True)
-    resp.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{_urlquote(download_name)}"
-    resp.headers["Content-Length"] = str(size)
+    resp.headers["Content-Length"] = str(os.path.getsize(path))
     return resp
-
-
-def _urlquote(s: str) -> str:
-    from urllib.parse import quote
-    return quote(s)
 
 
 def _download_folder(owner, f: File):
@@ -160,7 +166,7 @@ def _download_folder(owner, f: File):
     import zipfile
     import tempfile
 
-    total = file_service.tree_size(owner, f)
+    total = file_service.tree_size(f)
     try:
         check_download(owner, total)
     except QuotaError as e:
@@ -171,7 +177,7 @@ def _download_folder(owner, f: File):
     os.close(fd)
     try:
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
-            _add_dir_to_zip(zf, f, "")
+            file_service.add_dir_to_zip(zf, f, "")
     except Exception:
         try:
             os.remove(zip_path)
@@ -192,17 +198,6 @@ def _download_folder(owner, f: File):
 
     return send_file(zip_path, mimetype="application/zip", as_attachment=True,
                      download_name=f"{f.name}.zip")
-
-
-def _add_dir_to_zip(zf, node: File, prefix: str):
-    for child in file_service.active_children(node):
-        arc = prefix + child.name
-        if child.is_dir:
-            _add_dir_to_zip(zf, child, arc + "/")
-        else:
-            p = file_service.get_physical_path(child.storage_key)
-            if os.path.exists(p):
-                zf.write(p, arc)
 
 
 @files_bp.route("/files/<int:file_id>/rename", methods=["POST"])
@@ -366,7 +361,7 @@ def batch_download():
     if not nodes:
         abort(404, "所选文件不存在")
 
-    total = sum(file_service.tree_size(owner, n) for n in nodes)
+    total = sum(file_service.tree_size(n) for n in nodes)
     try:
         check_download(owner, total)
     except QuotaError as e:
@@ -379,7 +374,7 @@ def batch_download():
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:
             for n in nodes:
                 if n.is_dir:
-                    _add_dir_to_zip(zf, n, n.name + "/")
+                    file_service.add_dir_to_zip(zf, n, n.name + "/")
                 else:
                     p = file_service.get_physical_path(n.storage_key)
                     if os.path.exists(p):
@@ -406,6 +401,45 @@ def batch_download():
                      download_name="files.zip")
 
 
+# ---------- 在线压缩 / 解压 ----------
+
+@files_bp.route("/files/compress", methods=["POST"])
+@login_required
+def compress():
+    """把选中的文件/文件夹压缩为 zip 存入网盘"""
+    ids = _parse_ids(request.form.getlist("ids"))
+    if not ids:
+        flash("未选择文件", "danger")
+        return redirect(request.referrer or url_for("files.index"))
+    parent_id = request.form.get("parent_id") or None
+    try:
+        f = file_service.compress(current_file_owner(), ids, parent_id)
+        flash(f"已生成压缩包「{f.name}」", "success")
+    except (ValueError, PermissionError, QuotaError) as e:
+        flash(str(e), "danger")
+    return redirect(request.referrer or url_for("files.index"))
+
+
+@files_bp.route("/files/<int:file_id>/extract", methods=["POST"])
+@login_required
+def extract(file_id):
+    """解压 zip 压缩包到其所在目录"""
+    owner = current_file_owner()
+    parent_id = request.form.get("parent_id")
+    if parent_id in (None, ""):
+        try:
+            parent_id = file_service.get_owned_file(owner, file_id).parent_id
+        except (PermissionError, ValueError) as e:
+            flash(str(e), "danger")
+            return redirect(request.referrer or url_for("files.index"))
+    try:
+        count = file_service.extract_zip(owner, file_id, parent_id)
+        flash(f"解压完成，共 {count} 个文件", "success")
+    except (ValueError, PermissionError, QuotaError) as e:
+        flash(str(e), "danger")
+    return redirect(request.referrer or url_for("files.index"))
+
+
 # ---------- 分片上传 ----------
 
 @files_bp.route("/api/upload/init", methods=["POST"])
@@ -413,14 +447,20 @@ def batch_download():
 def upload_init():
     owner = current_file_owner()
     data = request.get_json() or {}
-    filename = data.get("filename") or ""
+    raw_name = data.get("filename") or ""
     total_size = int(data.get("total_size") or 0)
     chunk_size = int(data.get("chunk_size") or current_app.config["CHUNK_SIZE"])
     md5 = data.get("md5")
     parent_id = data.get("parent_id") or None
 
-    if not filename or total_size <= 0:
+    if not raw_name or total_size <= 0:
         return jsonify(error="参数错误"), 400
+
+    filename = safe_filename(raw_name)
+    try:
+        check_extension(filename)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
 
     try:
         check_upload(owner, total_size)
@@ -432,10 +472,13 @@ def upload_init():
         existing = File.query.filter_by(user_id=owner.id, md5=md5, is_dir=False).first()
         if existing and existing.storage_key and os.path.exists(
                 file_service.get_physical_path(existing.storage_key)):
-            f = file_service.create_reference(
-                owner, parent_id, filename, total_size,
-                mime=existing.mime, md5=md5, storage_key=existing.storage_key,
-            )
+            try:
+                f = file_service.create_reference(
+                    owner, parent_id, filename, total_size,
+                    mime=existing.mime, md5=md5, storage_key=existing.storage_key,
+                )
+            except ValueError as e:
+                return jsonify(error=str(e)), 400
             consume_traffic(owner, total_size, "upload")
             db.session.commit()
             return jsonify(uploaded=True, fast=True, file_id=f.id)
@@ -502,6 +545,9 @@ def upload_complete():
         sess.status = "complete"
         sess.completed_at = utcnow()
         db.session.commit()
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify(error=str(e)), 400
     except Exception as e:
         db.session.rollback()
         return jsonify(error=str(e)), 500

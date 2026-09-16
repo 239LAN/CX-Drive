@@ -2,6 +2,16 @@
 {% block title %}分享 - {{ root.name }} - {{ site_name }}{% endblock %}
 {% block content %}
 
+{% if not current_user.is_authenticated %}
+<div class="alert alert-info d-flex align-items-center" role="alert">
+    <i class="bi bi-lightning-charge-fill me-2"></i>
+    <div>
+        当前尚未登录，下载将被限速。速度限制： {{ (1024 * 1024)|human_size }}/s。
+        <a href="{{ url_for('auth.login', next=request.path) }}" class="alert-link">登录</a>享不限速下载。
+    </div>
+</div>
+{% endif %}
+
 <div class="card mb-3">
     <div class="card-body">
         <div class="d-flex align-items-center">
@@ -19,7 +29,21 @@
                 {% endif %}
                 {% endfor %}
             </nav>
-            <span class="ms-auto text-muted small">分享者提供的临时页面</span>
+            <span class="ms-auto d-flex align-items-center gap-2">
+                <span class="text-muted small">分享者提供的临时页面</span>
+                {% if current_user.is_authenticated %}
+                <form method="post" action="{{ url_for('share.save', token=link.token) }}">
+                    <input type="hidden" name="file" value="{{ folder.id }}">
+                    <button class="btn btn-sm btn-outline-success">
+                        <i class="bi bi-folder-plus"></i> 转存此文件夹
+                    </button>
+                </form>
+                {% else %}
+                <a href="{{ url_for('auth.login', next=request.path) }}" class="btn btn-sm btn-outline-secondary">
+                    <i class="bi bi-box-arrow-in-right"></i> 登录后转存
+                </a>
+                {% endif %}
+            </span>
         </div>
     </div>
 </div>
@@ -31,7 +55,7 @@
                 <tr>
                     <th>名称</th>
                     <th style="width:120px">大小</th>
-                    <th style="width:140px">操作</th>
+                    <th style="width:190px">操作</th>
                 </tr>
             </thead>
             <tbody>
@@ -53,6 +77,14 @@
                             <input type="hidden" name="file" value="{{ f.id }}">
                             <button class="btn btn-sm btn-outline-primary" title="下载">
                                 <i class="bi bi-download"></i> 下载
+                            </button>
+                        </form>
+                        {% endif %}
+                        {% if current_user.is_authenticated %}
+                        <form method="post" action="{{ url_for('share.save', token=link.token) }}" class="d-inline">
+                            <input type="hidden" name="file" value="{{ f.id }}">
+                            <button class="btn btn-sm btn-outline-success" title="转存到我的网盘">
+                                <i class="bi bi-folder-plus"></i>
                             </button>
                         </form>
                         {% endif %}

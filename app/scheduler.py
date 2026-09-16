@@ -1,9 +1,11 @@
-"""定时任务：流量跨月重置、到期锁定、30 天缓冲期后硬删除"""
+"""定时任务：流量跨月重置、到期锁定、30 天缓冲期后硬删除、每日 0 点检查更新"""
+import os
+import threading
 from datetime import timedelta
 
 from app.extensions import db
 from app.models import User, MembershipPlan, UserAddon
-from app.services import file_service
+from app.services import file_service, update_service
 from app.utils.helpers import utcnow
 
 
@@ -63,15 +65,30 @@ def run_all():
     hard_delete_locked_users()
 
 
+def check_update():
+    """检查新版本；config.yml 的 update.enabled 为 true 时自动安装"""
+    update_service.check()
+
+
 def start_scheduler(app):
     """启动 APScheduler 定时任务"""
     from apscheduler.schedulers.background import BackgroundScheduler
+    from apscheduler.triggers.cron import CronTrigger
     scheduler = BackgroundScheduler()
 
     def job():
         with app.app_context():
             run_all()
 
+    def update_job():
+        with app.app_context():
+            check_update()
+
     scheduler.add_job(job, "interval", hours=1, id="maintenance")
+    # 每天 0 点（服务器本地时间）检查更新：关闭自动更新时仍检查，仅不安装
+    scheduler.add_job(update_job, CronTrigger(hour=0, minute=0), id="auto_update")
     scheduler.start()
+    if os.environ.get("CLOUDPAN_DISABLE_BG") != "1":
+        # 启动后立即检查一次，页脚无需等到次日 0 点才显示版本信息
+        threading.Thread(target=update_job, daemon=True, name="update-check").start()
     return scheduler

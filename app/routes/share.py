@@ -11,7 +11,9 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 from app.extensions import db
 from app.models import ShareLink, File, AnonDlWeek
-from app.utils.helpers import utcnow, current_file_owner
+from app.utils.helpers import (
+    utcnow, current_file_owner, guess_mimetype, content_disposition,
+)
 
 share_bp = Blueprint("share", __name__)
 
@@ -68,14 +70,17 @@ def _grant(token: str):
     session["share_auth"] = auth
 
 
-def _load_share(token: str):
-    """加载并校验分享状态，返回 (link, file)；无效则 abort"""
+def _load_share(token: str, check_downloads: bool = True):
+    """加载并校验分享状态，返回 (link, file)；无效则 abort
+
+    check_downloads=False 用于转存：转存不消耗下载次数
+    """
     link = ShareLink.query.filter_by(token=token).first()
     if link is None:
         abort(404, "分享不存在")
     if link.expire_at and link.expire_at < utcnow():
         abort(410, "分享已过期")
-    if link.max_downloads is not None and link.download_count >= link.max_downloads:
+    if check_downloads and link.max_downloads is not None and link.download_count >= link.max_downloads:
         abort(410, "下载次数已用完")
 
     f = db.session.get(File, link.file_id)
@@ -203,6 +208,43 @@ def download(token):
     return _send_file(link, target)
 
 
+@share_bp.route("/share/<token>/save", methods=["POST"])
+@login_required
+def save(token):
+    """转存：把分享的文件/文件夹复制一份到自己网盘（不消耗下载次数）"""
+    from app.services import file_service
+    from app.services.quota_service import QuotaError
+
+    link, f = _load_share(token, check_downloads=False)
+    if link.password_hash and not _granted(token):
+        flash("请先输入访问密码", "warning")
+        return redirect(url_for("share.access", token=token))
+
+    # 文件夹分享内可转存指定子节点（file=<id>）
+    target = f
+    file_id = request.form.get("file")
+    if file_id:
+        try:
+            node = db.session.get(File, int(file_id))
+        except (TypeError, ValueError):
+            abort(404, "文件不存在或无权访问")
+        if node is None or not _node_in_tree(node, f) or node.deleted_at is not None:
+            abort(404, "文件不存在或无权访问")
+        target = node
+
+    try:
+        new_f = file_service.save_shared(current_file_owner(), target)
+        flash(f"已转存「{new_f.name}」到我的网盘", "success")
+    except (ValueError, PermissionError, QuotaError) as e:
+        flash(str(e), "danger")
+
+    # 下载次数已用尽的分享无法再打开分享页，此时回自己的网盘展示提示
+    if link.max_downloads is not None and link.download_count >= link.max_downloads:
+        return redirect(url_for("files.index"))
+    return redirect(url_for("share.access", token=token, **(
+        {"folder_id": target.id} if f.is_dir and target.id != f.id else {})))
+
+
 def _node_in_tree(node: File, root: File) -> bool:
     """node 是否位于 root 的子树内（含自身），沿途节点均未删除"""
     cur = node
@@ -269,43 +311,43 @@ def _send_file(link: ShareLink, f: File):
         abort(404, "文件实体丢失")
     link.download_count += 1
     db.session.commit()
+    # 以真实文件大小为准：库中记录可能过期，浏览器会按 Content-Length 校验
+    size = os.path.getsize(path)
     if current_user.is_authenticated:
-        return send_file(path, as_attachment=True, download_name=f.name)
+        resp = send_file(path, mimetype=guess_mimetype(f.name), as_attachment=True,
+                         download_name=f.name)
+        resp.headers["Content-Disposition"] = content_disposition(f.name)
+        return resp
     ip = _client_ip()
     used = _anon_used(ip)
-    if used + f.size > ANON_WEEKLY_QUOTA:
+    if used + size > ANON_WEEKLY_QUOTA:
         abort(429, "该 IP 本周匿名下载流量已用尽（1GB），请登录后继续下载")
-    return _stream_limited(path, f.name, f.size, ip, used)
+    return _stream_limited(path, f.name, size, ip, used)
 
 
 def _stream_limited(path: str, download_name: str, size: int, ip: str, used0: int):
     """未登录访客下载：按 1 MiB/s 流式限速，并实时扣减该 IP 本周匿名配额"""
+    # 声明长度不得超出剩余匿名配额，保证 Content-Length 与实际发送字节一致
+    length = min(size, max(ANON_WEEKLY_QUOTA - used0, 0))
+
     def generate():
         chunk = 256 * 1024
         sent = 0
         with open(path, "rb") as fh:
-            while True:
-                data = fh.read(chunk)
+            while sent < length:
+                data = fh.read(min(chunk, length - sent))
                 if not data:
-                    break
-                remaining = ANON_WEEKLY_QUOTA - (used0 + sent)
-                if remaining <= 0:
-                    break
-                if len(data) > remaining:
-                    data = data[:remaining]
-                    sent += len(data)
-                    _anon_consume(ip, len(data))
-                    yield data
                     break
                 sent += len(data)
                 _anon_consume(ip, len(data))
                 yield data
-                time.sleep(len(data) / ANON_SPEED_LIMIT)
+                if sent < length:
+                    time.sleep(len(data) / ANON_SPEED_LIMIT)
 
-    from urllib.parse import quote
     resp = Response(stream_with_context(generate()), direct_passthrough=True)
-    resp.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{quote(download_name)}"
-    resp.headers["Content-Length"] = str(size)
+    resp.headers["Content-Type"] = guess_mimetype(download_name)
+    resp.headers["Content-Length"] = str(length)
+    resp.headers["Content-Disposition"] = content_disposition(download_name)
     return resp
 
 
