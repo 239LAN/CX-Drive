@@ -1,4 +1,4 @@
-"""gunicorn 生产配置（供 install.sh 部署的 systemd 服务使用）"""
+"""gunicorn 生产配置（供安装脚本部署的 systemd 服务使用）"""
 import multiprocessing
 import os
 import sys

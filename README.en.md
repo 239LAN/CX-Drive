@@ -2,17 +2,21 @@
 
 **[简体中文](README.md) | English**
 
-CX-Drive is an out-of-the-box, self-hostable lightweight cloud drive system. Built with Flask, it supports file management, share links, recycle bin, membership plans, and an admin console. Deploy or upgrade on mainstream Linux servers with a single command.
+CX-Drive is an out-of-the-box, self-hostable lightweight cloud drive system. Built with Flask, it supports file management, in-browser preview, zip / unzip, share links, remote download, a recycle bin, membership plans, and an admin console. Deploy or upgrade on mainstream Linux servers with a single command.
 
 ## Features
 
 - **File management**: folders, upload/download, search & sort, rename / move / copy, batch operations, recycle bin to prevent accidental deletion
+- **In-browser preview**: images, text, audio and video open right in the web page (toggle via `config.yml`, members only)
+- **Zip & unzip**: pack selected files / folders into a zip in one click, and unzip archives directly in the browser; multi-select downloads are zipped automatically
 - **Large file transfer**: chunked upload with MD5 instant-upload (server-side dedup), resumable-friendly
-- **Share links**: share a single file or an entire folder; optional extraction password, expiry date, and download-count limits. Visitors can browse and download **without an account** (anonymous downloads throttled to 1 MiB/s)
-- **Quotas & membership**: storage, per-file size limit, download throttle, and monthly traffic are all controlled per plan; optional traffic / storage add-ons
+- **Share links**: share a single file or an entire folder; optional extraction password, expiry date, and download-count limits. Visitors can browse and download **without an account** (anonymous downloads throttled to 1 MiB/s), and can save a share straight into their own drive
+- **Remote download**: paste a URL and let the server fetch the file in the background (toggle via `config.yml`)
+- **Quotas & membership**: storage, per-file size limit, download throttle, and monthly traffic are all controlled per plan; optional traffic / storage add-ons; signed-in users are unlimited by default
 - **Admin console**: user management, plan / add-on management, balance adjustment, membership gifting, statistics dashboard
-- **Security by design**: hashed passwords, brute-force lockout on share passwords (per IP + share), external links served only through the web page to prevent hot-linking
+- **Security by design**: hashed passwords, upload extension allow-list plus magic-byte sniffing (rejects executables and scripts disguised as common formats), brute-force lockout on share passwords (per IP + share), external links served only through the web page to prevent hot-linking
 - **One-command deployment**: the standalone installer embeds the full source code; `sudo bash CXDrive-release-<version>.sh` performs a fresh install or an in-place upgrade
+- **Auto update**: checks GitHub Releases daily at 00:00 and installs new versions in place (disable in `config.yml`; falls back to a public proxy when GitHub is unreachable); the footer shows the current version and update hints
 
 ## Tech Stack
 
