@@ -1,4 +1,6 @@
 """认证路由：注册/登录/登出/改密码"""
+import threading
+
 from flask import (
     Blueprint, render_template, request, redirect, url_for, flash, session, current_app,
 )
@@ -9,6 +11,21 @@ from app.models import User
 from app.utils.helpers import safe_filename
 
 auth_bp = Blueprint("auth", __name__)
+
+
+def _check_update_on_login(user):
+    """管理员登录时后台检查一次更新（仅检查不安装，不阻塞登录、失败静默）"""
+    if not user.is_admin or not current_app.config.get("UPDATE_CHECK_ON_LOGIN"):
+        return
+    from app.services import update_service
+
+    def run():
+        try:
+            update_service.check(apply_update=False)
+        except Exception:
+            pass
+
+    threading.Thread(target=run, daemon=True, name="admin-login-update").start()
 
 
 @auth_bp.route("/register", methods=["GET", "POST"])
@@ -76,6 +93,7 @@ def login():
         else:
             login_user(user, remember=bool(request.form.get("remember")))
             session.pop("admin_view_uid", None)
+            _check_update_on_login(user)
             flash("登录成功", "success")
             # 仅允许跳转站内相对路径
             next_url = request.args.get("next") or ""

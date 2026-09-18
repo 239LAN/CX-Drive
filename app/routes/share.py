@@ -306,7 +306,9 @@ def _anon_consume(ip: str, delta: int):
 def _send_file(link: ShareLink, f: File):
     import os
     from app.services import file_service
-    path = file_service.get_physical_path(f.storage_key)
+    if f.is_lost:
+        abort(404, "文件已丢失")
+    path = file_service.get_physical_path(f.storage_key, f.storage_id)
     if not os.path.exists(path):
         abort(404, "文件实体丢失")
     link.download_count += 1

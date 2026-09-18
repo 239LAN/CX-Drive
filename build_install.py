@@ -5,7 +5,7 @@
 输出在 Linux（systemd 发行版）上可直接执行的单文件安装脚本。
 
 用法:
-    python build_install.py                    # 输出 dist/CXDrive-release-<VERSION>.sh
+    python build_install.py                    # 输出 dist/RealFiles-release-<VERSION>-install.sh
     python build_install.py -o dist/app.sh     # 指定输出文件名
 """
 import argparse
@@ -22,16 +22,19 @@ VERSION_FILE = os.path.join(BASE, "VERSION")
 # 产物统一放在 dist/ 目录，便于管理（该目录不参与打包，也不部署到服务器）
 DIST_DIR = os.path.join(BASE, "dist")
 
-BEGIN = "# CX_DRIVE_BEGIN"
-END = "# CX_DRIVE_END"
+BEGIN = "# REALFILES_BEGIN"
+END = "# REALFILES_END"
 
 # 排除项与 install-template.sh 的 rsync 规则一致：数据/密钥/环境/开发残留不打包
 EXCLUDE_DIRS = {".git", "__pycache__", "venv", ".venv", "instance", "storage",
-                "uploads", ".pytest_cache", "dist", "_smoke_tmp", "_chk_tmp", "_rt_tmp"}
+                "uploads", "storage_cache", ".pytest_cache", "dist", "_smoke_tmp",
+                "_chk_tmp", "_rt_tmp"}
 EXCLUDE_FILES = {".gitignore", ".env", "install.sh", "install-template.sh",
-                 "cloudpan-install.sh", "build_install.py",
+                 "realfiles-install.sh", "build_install.py",
                  "_smoke_run.py", "_chk_new.py", "_rt_check.py", "_pyc_probe.py"}
-EXCLUDE_PATTERNS = ("*.pyc", "*.db", "*.log")
+# 下划线开头的临时脚本（_t_*.py 自测 / _v_*.py 校验）不应进入发布产物
+EXCLUDE_PATTERNS = ("*.pyc", "*.db", "*.log", "RealFiles-release-*.sh",
+                    "_t_*.py", "_v_*.py")
 
 
 def read_version() -> str:
@@ -81,13 +84,13 @@ def inject_payload(template: str, payload: bytes) -> str:
 
 def release_name() -> str:
     """发布产物文件名：GitHub Release 附件与自动更新均依赖该命名"""
-    return f"CXDrive-release-{read_version()}.sh"
+    return f"RealFiles-release-{read_version()}-install.sh"
 
 
 def main():
-    ap = argparse.ArgumentParser(description="生成创想云盘单文件安装包")
+    ap = argparse.ArgumentParser(description="生成 RealFiles 单文件安装包")
     ap.add_argument("-o", "--output", default=None,
-                    help="输出文件名（默认 dist/CXDrive-release-<VERSION>.sh）")
+                    help="输出文件名（默认 dist/RealFiles-release-<VERSION>-install.sh）")
     args = ap.parse_args()
 
     if args.output:

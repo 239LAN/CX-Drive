@@ -2,7 +2,7 @@
 {% block title %}用户详情 - {{ u.username }} - {{ site_name }}{% endblock %}
 {% block content %}
 <h4 class="mb-3"><i class="bi bi-person-badge"></i> 用户详情
-    <a href="{{ url_for('admin.index') }}#users" class="btn btn-sm btn-outline-secondary ms-2">← 返回用户列表</a>
+    <a href="{{ url_for('admin.users_page') }}" class="btn btn-sm btn-outline-secondary ms-2">← 返回用户列表</a>
 </h4>
 
 <div class="row g-3 mb-3">
@@ -58,7 +58,15 @@
                     <select name="plan_id" class="form-select form-select-sm">
                         {% for p in plans %}{% if p.name != 'free' %}<option value="{{ p.id }}">{{ p.display_name }}</option>{% endif %}{% endfor %}
                     </select>
-                    <button class="btn btn-sm btn-warning">送会员</button>
+                    <input type="number" step="1" min="1" name="duration_value" class="form-control form-control-sm" value="1" style="max-width:90px" required>
+                    <select name="duration_unit" class="form-select form-select-sm" style="max-width:80px">
+                        <option value="second">秒</option>
+                        <option value="minute">分</option>
+                        <option value="hour">时</option>
+                        <option value="day" selected>天</option>
+                        <option value="month">月</option>
+                    </select>
+                    <button class="btn btn-sm btn-warning text-nowrap">送会员</button>
                 </form>
                 <form method="post" action="{{ url_for('admin.gift_addon', user_id=u.id) }}" class="d-flex gap-2 mb-2">
                     <select name="package_id" class="form-select form-select-sm">
@@ -97,7 +105,7 @@
                     {% for um, disp in memberships %}
                     <tr><td>{{ disp }}</td><td class="small">{{ um.start_at.strftime('%Y-%m-%d') }}</td>
                         <td class="small">{{ um.expire_at.strftime('%Y-%m-%d') }}</td>
-                        <td><span class="badge bg-light text-dark">{{ '管理员赠送' if um.source=='admin_gift' else '购买' }}</span></td></tr>
+                        <td><span class="badge bg-light text-dark">{{ {'admin_gift': '管理员赠送', 'redeem': '兑换码'}.get(um.source, '购买') }}</span></td></tr>
                     {% else %}<tr><td colspan="4" class="text-center text-muted py-3">无记录</td></tr>{% endfor %}
                 </tbody>
             </table>

@@ -94,6 +94,14 @@
     </div>
 </div>
 
+<!-- 文件丢失提示（存储点被删除且数据未转移） -->
+{% if lost_count %}
+<div class="alert alert-danger d-flex align-items-center gap-2 py-2 mb-3">
+    <i class="bi bi-exclamation-triangle-fill"></i>
+    <span>有 <strong>{{ lost_count }}</strong> 个文件因所在存储点被删除而丢失，无法下载或预览；对应记录将在 7 天后自动清理。</span>
+</div>
+{% endif %}
+
 <!-- 文件列表 -->
 <div class="card">
     <div class="card-body p-0">
@@ -109,7 +117,7 @@
             </thead>
             <tbody>
                 {% for f in items %}
-                <tr>
+                <tr class="{{ 'text-muted opacity-75' if f.is_lost else '' }}">
                     <td><input type="checkbox" class="row-check form-check-input" value="{{ f.id }}"></td>
                     <td>
                         {% if f.is_dir %}
@@ -118,11 +126,17 @@
                             </a>
                         {% else %}
                             <i class="bi bi-file-earmark text-secondary file-icon me-2"></i>{{ f.name }}
+                            {% if f.is_lost %}
+                            <span class="badge bg-danger ms-2" title="所在存储点已删除且数据未转移">文件已丢失</span>
+                            {% endif %}
                         {% endif %}
                     </td>
                     <td>{{ '-' if f.is_dir else f.size|human_size }}</td>
                     <td>{{ f.updated_at.strftime('%Y-%m-%d %H:%M') }}</td>
                     <td>
+                        {% if f.is_lost %}
+                        <span class="text-danger small"><i class="bi bi-slash-circle"></i> 实体已丢失</span>
+                        {% else %}
                         {% if f.is_dir %}
                         <a href="{{ url_for('files.download', file_id=f.id) }}" class="btn btn-sm btn-outline-secondary" title="打包下载 ZIP"><i class="bi bi-file-earmark-zip"></i></a>
                         {% else %}
@@ -136,9 +150,12 @@
                         </form>
                         {% endif %}
                         {% endif %}
+                        {% endif %}
                         <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#renameModal" data-id="{{ f.id }}" data-name="{{ f.name }}" title="重命名"><i class="bi bi-pencil"></i></button>
                         <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#moveModal" data-id="{{ f.id }}" title="移动"><i class="bi bi-arrows-move"></i></button>
+                        {% if not f.is_lost %}
                         <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#copyModal" data-id="{{ f.id }}" title="复制"><i class="bi bi-copy"></i></button>
+                        {% endif %}
                         {% if enable_share %}
                         <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#shareModal" data-id="{{ f.id }}" title="分享"><i class="bi bi-share"></i></button>
                         {% endif %}

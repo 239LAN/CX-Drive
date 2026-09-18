@@ -34,6 +34,8 @@ def view(file_id):
     f = file_service.get_owned_file(owner, file_id)
     if f.is_dir:
         abort(400, "无法预览文件夹")
+    if f.is_lost:
+        abort(404, "文件已丢失")
 
     try:
         check_preview(owner)
@@ -41,7 +43,7 @@ def view(file_id):
         abort(403, str(e))
 
     ext = os.path.splitext(f.name)[1].lower()
-    path = file_service.get_physical_path(f.storage_key)
+    path = file_service.get_physical_path(f.storage_key, f.storage_id)
     if not os.path.exists(path):
         abort(404, "文件实体丢失")
 
@@ -78,12 +80,14 @@ def stream(file_id):
     f = file_service.get_owned_file(owner, file_id)
     if f.is_dir:
         abort(400)
+    if f.is_lost:
+        abort(404, "文件已丢失")
     try:
         check_preview(owner)
     except QuotaError as e:
         abort(403, str(e))
 
-    path = file_service.get_physical_path(f.storage_key)
+    path = file_service.get_physical_path(f.storage_key, f.storage_id)
     if not os.path.exists(path):
         abort(404)
 

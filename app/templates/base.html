@@ -36,7 +36,7 @@
                 {% endif %}
                 <li class="nav-item"><a class="nav-link" href="{{ url_for('billing.index') }}">会员中心</a></li>
                 {% if current_user.is_admin %}
-                <li class="nav-item"><a class="nav-link text-warning" href="{{ url_for('admin.index') }}">管理后台</a></li>
+                <li class="nav-item"><a class="nav-link text-warning" href="{{ url_for('admin.users_page') }}">管理后台</a></li>
                 {% endif %}
             </ul>
             <ul class="navbar-nav">

@@ -45,16 +45,23 @@ def index(parent_id=None):
     order = request.args.get("order") if request.args.get("order") in _ORDER_CHOICES else "asc"
     keyword = (request.args.get("q") or "").strip()
     q = effective_quota(owner)
+    lost_count = File.query.filter(
+        File.user_id == owner.id,
+        File.is_lost == True,  # noqa: E712
+        File.deleted_at.is_(None),
+    ).count()
 
     if keyword:
         items = file_service.search(owner, keyword, sort, order)
         return render_template("files/index.html", parent=None, items=items, crumbs=[],
-                               q=q, search=keyword, sort=sort, order=order, owner=owner)
+                               q=q, search=keyword, sort=sort, order=order, owner=owner,
+                               lost_count=lost_count)
 
     parent, items = file_service.list_dir(owner, parent_id, sort, order)
     crumbs = file_service.get_breadcrumb(parent)
     return render_template("files/index.html", parent=parent, items=items, crumbs=crumbs,
-                           q=q, search="", sort=sort, order=order, owner=owner)
+                           q=q, search="", sort=sort, order=order, owner=owner,
+                           lost_count=lost_count)
 
 
 @files_bp.route("/files/folder/new", methods=["POST"])
@@ -127,7 +134,9 @@ def download(file_id):
 
 
 def _download_file(owner, f: File):
-    path = file_service.get_physical_path(f.storage_key)
+    if f.is_lost:
+        abort(404, "文件已丢失")
+    path = file_service.get_physical_path(f.storage_key, f.storage_id)
     if not os.path.exists(path):
         abort(404, "文件实体丢失")
 
@@ -385,8 +394,8 @@ def batch_download():
             for n in nodes:
                 if n.is_dir:
                     file_service.add_dir_to_zip(zf, n, n.name + "/")
-                else:
-                    p = file_service.get_physical_path(n.storage_key)
+                elif not n.is_lost:
+                    p = file_service.get_physical_path(n.storage_key, n.storage_id)
                     if os.path.exists(p):
                         zf.write(p, n.name)
     except Exception:
@@ -484,13 +493,15 @@ def upload_init():
 
     # 秒传：md5 命中且文件实体存在
     if md5:
-        existing = File.query.filter_by(user_id=owner.id, md5=md5, is_dir=False).first()
+        existing = File.query.filter_by(
+            user_id=owner.id, md5=md5, is_dir=False, is_lost=False).first()
         if existing and existing.storage_key and os.path.exists(
-                file_service.get_physical_path(existing.storage_key)):
+                file_service.get_physical_path(existing.storage_key, existing.storage_id)):
             try:
                 f = file_service.create_reference(
                     owner, parent_id, filename, total_size,
                     mime=existing.mime, md5=md5, storage_key=existing.storage_key,
+                    storage_id=existing.storage_id,
                 )
             except ValueError as e:
                 return jsonify(error=str(e)), 400

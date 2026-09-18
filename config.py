@@ -1,7 +1,7 @@
 """应用配置
 
 站点通用选项、功能开关与 HTTPS/HSTS 设置来自项目根目录的 config.yml
-（可用环境变量 CLOUDPAN_CONFIG 指定其他路径），未配置的项回退到本文件的默认值。
+（可用环境变量 REALFILES_CONFIG 指定其他路径），未配置的项回退到本文件的默认值。
 """
 import os
 from pathlib import Path
@@ -9,12 +9,25 @@ from pathlib import Path
 import yaml
 
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_FILE = Path(os.environ.get("CLOUDPAN_CONFIG", str(BASE_DIR / "config.yml")))
-VERSION_FILE = Path(os.environ.get("CLOUDPAN_VERSION_FILE", str(BASE_DIR / "VERSION")))
+
+
+def env_get(name, default=None):
+    """读取 REALFILES_<name> 环境变量；未设置时回退读取旧的 CLOUDPAN_<name>
+
+    项目由 CX-Drive 更名为 RealFiles 后保留旧前缀兼容，已部署实例的 .env 无需改动。
+    """
+    value = os.environ.get(f"REALFILES_{name}")
+    if value is None:
+        value = os.environ.get(f"CLOUDPAN_{name}")
+    return default if value is None else value
+
+
+CONFIG_FILE = Path(env_get("CONFIG", str(BASE_DIR / "config.yml")))
+VERSION_FILE = Path(env_get("VERSION_FILE", str(BASE_DIR / "VERSION")))
 
 # 项目名：指向开源项目本身，固定标识；网站名（SITE_NAME）可由部署者自定义
-PROJECT_NAME = "创想云盘"
-PROJECT_NAME_EN = "CX-Drive"
+PROJECT_NAME = "RealFiles"
+PROJECT_NAME_EN = "RealFiles"
 
 # config.yml 中 features 下的键名 -> app.config 键名
 FEATURE_KEYS = {
@@ -25,8 +38,13 @@ FEATURE_KEYS = {
 }
 
 # 自动更新默认来源（GitHub 仓库 owner/name）与默认开关
-UPDATE_REPO = "239LAN/CX-Drive"
+UPDATE_REPO = "239LAN/RealFiles"
 UPDATE_ENABLED = True
+# 管理员登录时是否顺带检查更新
+UPDATE_CHECK_ON_LOGIN = True
+# 自动更新的每日执行时间（服务器本地时间）
+UPDATE_HOUR = 0
+UPDATE_MINUTE = 0
 # 公共 GitHub 代理：仅在直连 github.com / api.github.com 失败时回退使用；留空表示不使用
 UPDATE_PROXY = "https://v4.gh-proxy.org/"
 
@@ -49,6 +67,19 @@ def normalize_proxy(value):
     if not text:
         return ""
     return text if text.endswith("/") else text + "/"
+
+
+def _to_int(value, default, low=None, high=None):
+    """安全取整并夹取范围"""
+    try:
+        num = int(value)
+    except (TypeError, ValueError):
+        return default
+    if low is not None and num < low:
+        return low
+    if high is not None and num > high:
+        return high
+    return num
 
 
 def _resolve_path(value):
@@ -112,6 +143,11 @@ def load_site_config(path=CONFIG_FILE):
         "VERSION": read_version(),
         # 自动更新：关闭后仍每日检查并在页脚提示，但不自动安装
         "UPDATE_ENABLED": bool(update.get("enabled", UPDATE_ENABLED)),
+        # 管理员登录时检查一次更新
+        "UPDATE_CHECK_ON_LOGIN": bool(update.get("check_on_login", UPDATE_CHECK_ON_LOGIN)),
+        # 每日自动检查/安装时间（服务器本地时间）
+        "UPDATE_HOUR": _to_int(update.get("hour"), UPDATE_HOUR, 0, 23),
+        "UPDATE_MINUTE": _to_int(update.get("minute"), UPDATE_MINUTE, 0, 59),
         "UPDATE_REPO": str(update.get("repo") or "").strip() or UPDATE_REPO,
         # 直连 GitHub 失败时的回退代理，留空表示不使用
         "UPDATE_PROXY": normalize_proxy(update.get("proxy", UPDATE_PROXY)),
@@ -139,6 +175,80 @@ def load_site_config(path=CONFIG_FILE):
     return cfg
 
 
+def load_site_config_raw(path=CONFIG_FILE):
+    """读取 config.yml 原始分层结构（缺失项补默认值），供设置页编辑"""
+    path = Path(path or CONFIG_FILE)
+    data = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+    except FileNotFoundError:
+        pass
+    except yaml.YAMLError as e:
+        print(f"警告：{path} 解析失败，改用默认配置（{e}）")
+    if not isinstance(data, dict):
+        data = {}
+
+    def _section(name):
+        value = data.get(name)
+        return value if isinstance(value, dict) else {}
+
+    project, site = _section("project"), _section("site")
+    features, https, update = _section("features"), _section("https"), _section("update")
+    return {
+        "project": {
+            "name": str(project.get("name") or "").strip() or PROJECT_NAME,
+            "name_en": str(project.get("name_en") or "").strip() or PROJECT_NAME_EN,
+        },
+        "site": {"name": str(site.get("name") or "").strip()},
+        "features": {key: bool(features.get(key, True)) for key in FEATURE_KEYS},
+        "https": {
+            "enabled": bool(https.get("enabled", False)),
+            "certfile": str(https.get("certfile") or "").strip(),
+            "keyfile": str(https.get("keyfile") or "").strip(),
+            "hsts": bool(https.get("hsts", True)),
+            "hsts_max_age": _to_int(https.get("hsts_max_age"), HSTS_MAX_AGE, 1),
+        },
+        "update": {
+            "enabled": bool(update.get("enabled", UPDATE_ENABLED)),
+            "check_on_login": bool(update.get("check_on_login", UPDATE_CHECK_ON_LOGIN)),
+            "hour": _to_int(update.get("hour"), UPDATE_HOUR, 0, 23),
+            "minute": _to_int(update.get("minute"), UPDATE_MINUTE, 0, 59),
+            "repo": str(update.get("repo") or "").strip() or UPDATE_REPO,
+            "proxy": normalize_proxy(update.get("proxy", UPDATE_PROXY)),
+        },
+    }
+
+
+def save_site_config(sections, path=CONFIG_FILE):
+    """把设置页提交的配置写回 config.yml，保留文件中未识别的字段"""
+    path = Path(path or CONFIG_FILE)
+    data = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+    except FileNotFoundError:
+        pass
+    except yaml.YAMLError as e:
+        raise ValueError(f"现有 config.yml 解析失败，未写入（{e}）")
+    if not isinstance(data, dict):
+        data = {}
+    for name, values in sections.items():
+        section = data.get(name)
+        if not isinstance(section, dict):
+            section = {}
+        section.update(values)
+        data[name] = section
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        yaml.safe_dump(data, allow_unicode=True, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+    return path
+
+
 class Config:
     # 站点信息与功能开关：默认值，由 config.yml 覆盖
     PROJECT_NAME = PROJECT_NAME
@@ -152,12 +262,17 @@ class Config:
     # 版本与自动更新：默认值，由 config.yml 的 update 段覆盖
     VERSION = read_version()
     UPDATE_ENABLED = UPDATE_ENABLED
+    UPDATE_CHECK_ON_LOGIN = UPDATE_CHECK_ON_LOGIN
+    UPDATE_HOUR = UPDATE_HOUR
+    UPDATE_MINUTE = UPDATE_MINUTE
     UPDATE_REPO = UPDATE_REPO
     UPDATE_PROXY = UPDATE_PROXY
     # 更新工作目录：存放 status.json 与下载到的更新脚本
-    UPDATE_DIR = os.environ.get("CLOUDPAN_UPDATE_DIR", str(BASE_DIR / "instance" / "update"))
+    UPDATE_DIR = env_get("UPDATE_DIR", str(BASE_DIR / "instance" / "update"))
     # 应用内触发安装时执行的命令（由安装脚本写入 sudoers 放行的固定路径）
-    UPDATE_TRIGGER = os.environ.get("CLOUDPAN_UPDATE_TRIGGER", "/usr/local/sbin/cx-pan-auto-update")
+    UPDATE_TRIGGER = env_get("UPDATE_TRIGGER", "/usr/local/sbin/realfiles-auto-update")
+    # 应用内重启服务的命令（同样由安装脚本写入 sudoers 放行）
+    RESTART_TRIGGER = env_get("RESTART_TRIGGER", "/usr/local/sbin/realfiles-restart")
 
     # HTTPS 与 HSTS：默认值，由 config.yml 的 https 段覆盖
     HTTPS_ENABLED = False
@@ -171,7 +286,7 @@ class Config:
 
     # 数据库
     SQLALCHEMY_DATABASE_URI = os.environ.get(
-        "DATABASE_URL", f"sqlite:///{BASE_DIR / 'instance' / 'cloud_drive.db'}"
+        "DATABASE_URL", f"sqlite:///{BASE_DIR / 'instance' / 'realfiles.db'}"
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
@@ -181,6 +296,10 @@ class Config:
     UPLOAD_TMP_ROOT = os.environ.get("UPLOAD_TMP_ROOT", str(BASE_DIR / "uploads"))
     # 远程下载临时目录
     REMOTE_TMP_ROOT = os.environ.get("REMOTE_TMP_ROOT", str(BASE_DIR / "uploads" / "remote"))
+    # FTP 存储点文件拉取到本地的缓存目录
+    STORAGE_CACHE_ROOT = os.environ.get("STORAGE_CACHE_ROOT", str(BASE_DIR / "storage_cache"))
+    # FTP 缓存有效期（秒），超期由后台任务清理
+    STORAGE_CACHE_TTL = 3600
     CHUNK_SIZE = 4 * 1024 * 1024
 
     # 会话

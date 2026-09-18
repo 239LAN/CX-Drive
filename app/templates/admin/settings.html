@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}系统设置 - {{ site_name }}{% endblock %}
+{% block content %}
+<h4 class="mb-3"><i class="bi bi-gear"></i> 管理后台</h4>
+{% include "admin/_nav.html" %}
+
+{% set feature_labels = {
+    'allow_register': '开放注册',
+    'enable_preview': '在线预览',
+    'enable_share': '文件分享',
+    'enable_remote': '远程下载',
+} %}
+
+<form method="post" action="{{ url_for('admin.settings_save') }}">
+    <div class="row g-3">
+        <!-- 站点信息 -->
+        <div class="col-lg-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h6 class="mb-3"><i class="bi bi-globe"></i> 站点信息</h6>
+                    <div class="mb-3">
+                        <label class="form-label">项目名称</label>
+                        <input type="text" name="project_name" class="form-control" value="{{ cfg.project.name }}">
+                        <div class="form-text">开源项目名，用于页脚版权与版本说明</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">项目名称（英文）</label>
+                        <input type="text" name="project_name_en" class="form-control" value="{{ cfg.project.name_en }}">
+                    </div>
+                    <div class="mb-0">
+                        <label class="form-label">网站名称</label>
+                        <input type="text" name="site_name" class="form-control" value="{{ cfg.site.name }}" placeholder="留空则跟随项目名称">
+                        <div class="form-text">显示在浏览器标题与导航栏</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 功能开关 -->
+        <div class="col-lg-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h6 class="mb-3"><i class="bi bi-toggles"></i> 功能开关</h6>
+                    {% for key in features %}
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" role="switch" name="{{ key }}"
+                               id="f_{{ key }}" {{ 'checked' if cfg.features.get(key) }}>
+                        <label class="form-check-label" for="f_{{ key }}">{{ feature_labels.get(key, key) }}</label>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- 自动更新 -->
+        <div class="col-lg-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h6 class="mb-3"><i class="bi bi-cloud-arrow-down"></i> 自动更新</h6>
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" role="switch" name="update_check_on_login"
+                               id="u_login" {{ 'checked' if cfg['update']['check_on_login'] }}>
+                        <label class="form-check-label" for="u_login">管理员登录时检查更新</label>
+                    </div>
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" role="switch" name="update_enabled"
+                               id="u_enabled" {{ 'checked' if cfg['update']['enabled'] }}>
+                        <label class="form-check-label" for="u_enabled">自动安装更新</label>
+                        <div class="form-text">关闭后仍会按时检查并在页脚提示，但不自动安装</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">每日检查时间（服务器本地时间）</label>
+                        <div class="input-group" style="max-width:220px">
+                            <input type="number" min="0" max="23" name="update_hour" class="form-control" value="{{ '%02d'|format(cfg['update']['hour']) }}">
+                            <span class="input-group-text">时</span>
+                            <input type="number" min="0" max="59" name="update_minute" class="form-control" value="{{ '%02d'|format(cfg['update']['minute']) }}">
+                            <span class="input-group-text">分</span>
+                        </div>
+                        <div class="form-text">默认 0 点；修改后需重启服务生效</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">更新来源仓库</label>
+                        <input type="text" name="update_repo" class="form-control" value="{{ cfg['update']['repo'] }}" placeholder="owner/repo">
+                    </div>
+                    <div class="mb-0">
+                        <label class="form-label">GitHub 代理（直连失败时回退）</label>
+                        <input type="text" name="update_proxy" class="form-control" value="{{ cfg['update']['proxy'] }}" placeholder="留空表示不使用代理">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- HTTPS -->
+        <div class="col-lg-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h6 class="mb-3"><i class="bi bi-shield-lock"></i> HTTPS</h6>
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" role="switch" name="https_enabled"
+                               id="h_enabled" {{ 'checked' if cfg.https.enabled }}>
+                        <label class="form-check-label" for="h_enabled">启用 HTTPS</label>
+                        <div class="form-text">证书缺失时会自动回退为 HTTP 启动</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">证书文件（certfile）</label>
+                        <input type="text" name="https_certfile" class="form-control" value="{{ cfg.https.certfile }}" placeholder="/opt/realfiles/certs/fullchain.pem">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">私钥文件（keyfile）</label>
+                        <input type="text" name="https_keyfile" class="form-control" value="{{ cfg.https.keyfile }}" placeholder="/opt/realfiles/certs/privkey.pem">
+                    </div>
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" role="switch" name="https_hsts"
+                               id="h_hsts" {{ 'checked' if cfg.https.hsts }}>
+                        <label class="form-check-label" for="h_hsts">启用 HSTS</label>
+                    </div>
+                    <div class="mb-0">
+                        <label class="form-label">HSTS 有效期（秒）</label>
+                        <input type="number" min="1" name="hsts_max_age" class="form-control" value="{{ cfg.https.hsts_max_age }}">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-3 mb-4">
+        <button class="btn btn-primary"><i class="bi bi-save"></i> 保存设置</button>
+        <span class="text-muted small ms-2">保存写入 config.yml，重启服务后全部生效</span>
+    </div>
+</form>
+
+<!-- 更新状态与手动操作 -->
+<div class="card mb-4">
+    <div class="card-body">
+        <h6 class="mb-3"><i class="bi bi-arrow-repeat"></i> 更新状态</h6>
+        <ul class="list-unstyled small mb-3">
+            <li>当前版本：<b>{{ update_info.current }}</b></li>
+            <li>最新版本：<b>{{ update_info.latest or '未知' }}</b>
+                {% if update_info.has_update %}<span class="badge bg-danger">有新版本</span>{% endif %}
+            </li>
+            <li>最近检查：{{ update_info.checked_at or '尚未检查' }}</li>
+            {% if update_info.error %}<li class="text-danger">错误：{{ update_info.error }}</li>{% endif %}
+        </ul>
+        <div class="d-flex gap-2 flex-wrap">
+            <form method="post" action="{{ url_for('admin.settings_update') }}">
+                <input type="hidden" name="action" value="check">
+                <button class="btn btn-outline-primary"><i class="bi bi-search"></i> 检查更新</button>
+            </form>
+            <form method="post" action="{{ url_for('admin.settings_update') }}"
+                  data-confirm="确定立即下载并安装最新版本？安装过程中服务会自动重启。">
+                <input type="hidden" name="action" value="update">
+                <button class="btn btn-success"><i class="bi bi-download"></i> 立即更新</button>
+            </form>
+            <form method="post" action="{{ url_for('admin.settings_restart') }}"
+                  data-confirm="确定重启后台服务？当前所有连接会短暂中断。">
+                <button class="btn btn-outline-danger"><i class="bi bi-power"></i> 重启服务</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

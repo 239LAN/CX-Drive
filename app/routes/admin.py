@@ -1,25 +1,37 @@
-"""管理后台路由：概览统计、用户管理、套餐/叠加包维护、管理员授权"""
+"""管理后台路由：用户管理、套餐/叠加包维护、兑换码、设置"""
+import subprocess
 from datetime import timedelta
 from decimal import Decimal
 
-from flask import Blueprint, render_template, request, redirect, url_for, flash, abort, session
+from flask import (
+    Blueprint, render_template, request, redirect, url_for, flash, abort, session,
+    current_app,
+)
 from flask_login import login_required, current_user
 
+from config import FEATURE_KEYS, HSTS_MAX_AGE, load_site_config_raw, save_site_config
 from app.extensions import db
 from app.models import (
     User, MembershipPlan, AddonPackage, File, ShareLink, BalanceLog,
     UserMembership, UserAddon, PurchaseOrder, RechargeRecord,
-    UploadSession, AuditLog, RemoteDownload,
+    UploadSession, AuditLog, RemoteDownload, RedeemCode, RedeemRecord,
+    StoragePoint,
 )
-from app.services import billing_service, file_service
+from app.services import billing_service, file_service, storage_service, update_service
 from app.services.billing_service import BillingError
 from app.services.quota_service import effective_quota
-from app.utils.helpers import admin_required, utcnow
+from app.utils.helpers import admin_required, parse_duration, utcnow
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
 
 GB = 1024 ** 3
 MB = 1024 ** 2
+CODE_PAGE_SIZE = 200
+
+
+def _guard_redirect():
+    """管理页统一回跳目标"""
+    return request.referrer or url_for("admin.users_page")
 
 
 @admin_bp.before_request
@@ -62,14 +74,24 @@ def _dashboard_stats():
 
 @admin_bp.route("/")
 def index():
+    return redirect(url_for("admin.users_page"))
+
+
+# ---------- 用户管理 ----------
+
+@admin_bp.route("/users")
+def users_page():
     stats = _dashboard_stats()
-    users = User.query.order_by(User.id.desc()).all()
-    return render_template("admin/index.html", users=users, stats=stats,
+    keyword = (request.args.get("q") or "").strip()
+    query = User.query
+    if keyword:
+        query = query.filter(User.username.contains(keyword))
+    users = query.order_by(User.id.desc()).all()
+    return render_template("admin/users.html", users=users, stats=stats,
+                           keyword=keyword,
                            plans=MembershipPlan.query.order_by(MembershipPlan.sort).all(),
                            addon_pkgs=AddonPackage.query.order_by(AddonPackage.sort).all())
 
-
-# ---------- 用户详情与记录 ----------
 
 @admin_bp.route("/user/<int:user_id>")
 def user_detail(user_id):
@@ -111,20 +133,23 @@ def adjust_balance(user_id):
     except Exception as e:
         db.session.rollback()
         flash(f"调整失败：{e}", "danger")
-    return redirect(request.referrer or url_for("admin.user_detail", user_id=user.id))
+    return redirect(_guard_redirect())
 
 
 @admin_bp.route("/user/<int:user_id>/gift_plan", methods=["POST"])
 def gift_plan(user_id):
+    """赠送会员：精确到秒，可自定义单位"""
     user = db.session.get(User, user_id)
     plan_id = request.form.get("plan_id")
     try:
-        billing_service.admin_gift_plan(user, int(plan_id))
+        seconds = parse_duration(request.form.get("duration_value"),
+                                 request.form.get("duration_unit") or "day")
+        billing_service.admin_gift_plan(user, int(plan_id), seconds)
         flash(f"已为 {user.username} 赠送会员", "success")
-    except BillingError as e:
+    except (BillingError, ValueError) as e:
         db.session.rollback()
         flash(str(e), "danger")
-    return redirect(request.referrer or url_for("admin.user_detail", user_id=user.id))
+    return redirect(_guard_redirect())
 
 
 @admin_bp.route("/user/<int:user_id>/gift_addon", methods=["POST"])
@@ -137,7 +162,7 @@ def gift_addon(user_id):
     except BillingError as e:
         db.session.rollback()
         flash(str(e), "danger")
-    return redirect(request.referrer or url_for("admin.user_detail", user_id=user.id))
+    return redirect(_guard_redirect())
 
 
 @admin_bp.route("/user/<int:user_id>/toggle", methods=["POST"])
@@ -147,7 +172,7 @@ def toggle_user(user_id):
         user.is_active = not user.is_active
         db.session.commit()
         flash(f"已{'启用' if user.is_active else '禁用'} {user.username}", "success")
-    return redirect(request.referrer or url_for("admin.user_detail", user_id=user.id))
+    return redirect(_guard_redirect())
 
 
 @admin_bp.route("/user/<int:user_id>/toggle_admin", methods=["POST"])
@@ -169,7 +194,7 @@ def toggle_admin(user_id):
         user.is_admin = True
         db.session.commit()
         flash(f"已将 {user.username} 提升为管理员", "success")
-    return redirect(request.referrer or url_for("admin.index"))
+    return redirect(_guard_redirect())
 
 
 @admin_bp.route("/user/<int:user_id>/files", methods=["POST"])
@@ -186,7 +211,7 @@ def view_user_files(user_id):
 def exit_view_files():
     """退出代管模式"""
     session.pop("admin_view_uid", None)
-    return redirect(request.referrer or url_for("admin.index"))
+    return redirect(_guard_redirect())
 
 
 @admin_bp.route("/user/<int:user_id>/delete", methods=["POST"])
@@ -197,31 +222,35 @@ def delete_user(user_id):
         abort(404)
     if user.id == current_user.id:
         flash("不能删除自己的账号", "danger")
-        return redirect(url_for("admin.index"))
+        return redirect(url_for("admin.users_page"))
     if user.is_admin and User.query.filter_by(is_admin=True).count() <= 1:
         flash("系统至少需要保留一名管理员", "danger")
-        return redirect(url_for("admin.index"))
+        return redirect(url_for("admin.users_page"))
 
     username = user.username
     file_service.purge_user_data(user)  # 删除全部文件记录与物理实体
     for model in (ShareLink, UserMembership, UserAddon, RechargeRecord,
-                  BalanceLog, PurchaseOrder, UploadSession, AuditLog, RemoteDownload):
+                  BalanceLog, PurchaseOrder, UploadSession, AuditLog, RemoteDownload,
+                  RedeemRecord):
         model.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    RedeemCode.query.filter_by(used_by=user.id).update(
+        {"used_by": None}, synchronize_session=False)
     db.session.delete(user)
     db.session.commit()
 
     if session.get("admin_view_uid") == user_id:
         session.pop("admin_view_uid", None)
     flash(f"已删除用户 {username} 及其全部数据", "success")
-    return redirect(url_for("admin.index"))
+    return redirect(url_for("admin.users_page"))
 
 
-# ---------- 会员套餐维护 ----------
+# ---------- 套餐管理与叠加包 ----------
 
 @admin_bp.route("/plans")
 def plans_page():
     return render_template("admin/plans.html",
-                           plans=MembershipPlan.query.order_by(MembershipPlan.sort).all())
+                           plans=MembershipPlan.query.order_by(MembershipPlan.sort).all(),
+                           addons=AddonPackage.query.order_by(AddonPackage.sort).all())
 
 
 @admin_bp.route("/plans/save", methods=["POST"])
@@ -276,16 +305,9 @@ def plan_delete(plan_id):
     return redirect(url_for("admin.plans_page"))
 
 
-# ---------- 叠加包维护 ----------
-
-@admin_bp.route("/addons")
-def addons_page():
-    return render_template("admin/addons.html",
-                           addons=AddonPackage.query.order_by(AddonPackage.sort).all())
-
-
 @admin_bp.route("/addons/save", methods=["POST"])
 def addon_save():
+    """保存叠加包：时长支持秒级精度与单位换算"""
     try:
         pkg_id = request.form.get("package_id")
         a = db.session.get(AddonPackage, int(pkg_id)) if pkg_id else AddonPackage()
@@ -301,15 +323,16 @@ def addon_save():
         a.price = Decimal(request.form.get("price") or 0)
         if a.price < 0:
             raise ValueError("价格不能为负数")
-        a.duration_days = int(request.form.get("duration_days") or 30)
+        a.duration_seconds = parse_duration(request.form.get("duration_value"),
+                                            request.form.get("duration_unit") or "day")
         a.sort = int(request.form.get("sort") or 0)
         db.session.add(a)
         db.session.commit()
         flash("叠加包已保存", "success")
-    except Exception as e:
+    except (ValueError, ArithmeticError) as e:
         db.session.rollback()
         flash(f"保存失败：{e}", "danger")
-    return redirect(url_for("admin.addons_page"))
+    return redirect(url_for("admin.plans_page"))
 
 
 @admin_bp.route("/addons/<int:pkg_id>/delete", methods=["POST"])
@@ -323,4 +346,360 @@ def addon_delete(pkg_id):
         db.session.delete(a)
         db.session.commit()
         flash("叠加包已删除", "success")
-    return redirect(url_for("admin.addons_page"))
+    return redirect(url_for("admin.plans_page"))
+
+
+# ---------- 兑换码 ----------
+
+@admin_bp.route("/codes")
+def codes_page():
+    batch = (request.args.get("batch") or "").strip()
+    status = (request.args.get("status") or "").strip()
+    query = RedeemCode.query
+    if batch:
+        query = query.filter(RedeemCode.batch == batch)
+    if status == "unused":
+        query = query.filter(RedeemCode.used_count == 0)
+    elif status == "used":
+        query = query.filter(RedeemCode.used_count > 0)
+    codes = query.order_by(RedeemCode.id.desc()).limit(CODE_PAGE_SIZE).all()
+
+    now = utcnow()
+    records = RedeemRecord.query.order_by(RedeemRecord.id.desc()).limit(100).all()
+    return render_template(
+        "admin/codes.html", codes=codes, records=records, now=now,
+        batch=batch, status=status,
+        total=RedeemCode.query.count(),
+        used=RedeemCode.query.filter(RedeemCode.used_count > 0).count(),
+        record_total=RedeemRecord.query.count(),
+        plans=MembershipPlan.query.order_by(MembershipPlan.sort).all(),
+        addon_pkgs=AddonPackage.query.order_by(AddonPackage.sort).all(),
+    )
+
+
+@admin_bp.route("/codes/generate", methods=["POST"])
+def code_generate():
+    form = request.form
+    kind = form.get("kind") or "plan"
+    seconds = None
+    if kind in ("plan", "addon"):
+        raw = (form.get("duration_value") or "").strip()
+        if raw:
+            try:
+                seconds = parse_duration(raw, form.get("duration_unit") or "day")
+            except ValueError as e:
+                flash(str(e), "danger")
+                return redirect(url_for("admin.codes_page"))
+    try:
+        codes = billing_service.generate_redeem_codes(
+            kind=kind,
+            count=form.get("count") or 1,
+            prefix=form.get("prefix") or "",
+            length=form.get("length") or 12,
+            note=form.get("note") or "",
+            expire_days=form.get("expire_days") or 0,
+            plan_id=form.get("plan_id") or None,
+            duration_seconds=seconds,
+            amount=form.get("amount") or None,
+            package_id=form.get("package_id") or None,
+        )
+    except (BillingError, ValueError) as e:
+        db.session.rollback()
+        flash(str(e), "danger")
+        return redirect(url_for("admin.codes_page"))
+    flash(f"已生成 {len(codes)} 个兑换码", "success")
+    return redirect(url_for("admin.codes_page", batch=codes[0].batch))
+
+
+@admin_bp.route("/codes/<int:code_id>/delete", methods=["POST"])
+def code_delete(code_id):
+    code = db.session.get(RedeemCode, code_id)
+    if code is None:
+        abort(404)
+    db.session.delete(code)
+    db.session.commit()
+    flash("兑换码已删除", "success")
+    return redirect(_guard_redirect())
+
+
+@admin_bp.route("/codes/clear_unused", methods=["POST"])
+def codes_clear_unused():
+    """批量删除未使用的兑换码（可按批次）"""
+    batch = (request.form.get("batch") or "").strip()
+    query = RedeemCode.query.filter(RedeemCode.used_count == 0)
+    if batch:
+        query = query.filter(RedeemCode.batch == batch)
+        # 同批次中已使用的不删除，其余清空
+    count = query.delete(synchronize_session=False)
+    db.session.commit()
+    flash(f"已删除 {count} 个未使用的兑换码", "success")
+    return redirect(url_for("admin.codes_page", batch=batch))
+
+
+@admin_bp.route("/codes/records/clear", methods=["POST"])
+def codes_records_clear():
+    """清空兑换记录日志（不影响兑换码本身的使用状态）"""
+    count = RedeemRecord.query.delete(synchronize_session=False)
+    db.session.commit()
+    flash(f"已清空 {count} 条兑换记录", "success")
+    return redirect(url_for("admin.codes_page"))
+
+
+# ---------- 存储点 ----------
+
+def _apply_point_form(point, is_new: bool):
+    """把表单内容写入存储点对象并校验；失败抛 ValueError"""
+    kind = (request.form.get("kind") or "local").strip()
+    if kind not in ("local", "ftp"):
+        raise ValueError("存储类型不支持")
+    name = (request.form.get("name") or "").strip()
+    if not name:
+        raise ValueError("名称不能为空")
+    try:
+        capacity_gb = float(request.form.get("capacity_gb") or 0)
+    except ValueError:
+        raise ValueError("容量格式不正确")
+    capacity_bytes = int(capacity_gb * GB)
+    if capacity_bytes <= 0:
+        raise ValueError("容量必须大于 0")
+
+    sort_raw = request.form.get("sort")
+    try:
+        sort = int(sort_raw) if sort_raw not in (None, "") else 0
+    except ValueError:
+        sort = 0
+
+    point.name = name
+    point.kind = kind
+    point.capacity_bytes = capacity_bytes
+    point.sort = sort
+    # 停用的存储点能读不能写
+    point.enabled = bool(request.form.get("enabled"))
+
+    if kind == "local":
+        path = (request.form.get("path") or "").strip()
+        if not path:
+            raise ValueError("请填写本地存储目录")
+        point.path = path
+        point.host = None
+        point.username = None
+        point.password = None
+        point.remote_dir = None
+        return
+
+    host = (request.form.get("host") or "").strip()
+    if not host:
+        raise ValueError("请填写 FTP 服务器地址")
+    try:
+        port = int(request.form.get("port") or 21)
+    except ValueError:
+        raise ValueError("端口格式不正确")
+    if not 1 <= port <= 65535:
+        raise ValueError("端口超出范围")
+    password = request.form.get("password") or ""
+    if not password and not is_new:
+        password = point.password or ""  # 留空表示沿用原密码
+    point.path = None
+    point.host = host
+    point.port = port
+    point.username = (request.form.get("username") or "").strip()
+    point.password = password
+    point.remote_dir = (request.form.get("remote_dir") or "").strip() or "/"
+
+
+@admin_bp.route("/storage")
+def storage_page():
+    points = StoragePoint.query.order_by(StoragePoint.sort, StoragePoint.id).all()
+    rows = [{"point": p, "stats": storage_service.stats(p),
+             "plan": storage_service.delete_plan(p)} for p in points]
+    return render_template("admin/storage.html", rows=rows,
+                           default_root=current_app.config["STORAGE_ROOT"],
+                           suggested_gb=round(storage_service.detect_local_capacity(
+                               current_app.config["STORAGE_ROOT"]) / GB, 2))
+
+
+@admin_bp.route("/storage/save", methods=["POST"])
+def storage_save():
+    point_id = request.form.get("point_id")
+    try:
+        if point_id:
+            point = db.session.get(StoragePoint, int(point_id))
+            if point is None:
+                abort(404)
+        else:
+            point = StoragePoint()
+        _apply_point_form(point, is_new=not point_id)
+        err = storage_service.test_connection(point)
+        if err:
+            raise ValueError(err)
+        db.session.add(point)
+        db.session.commit()
+        flash("存储点已保存", "success")
+    except Exception as e:  # noqa: BLE001
+        db.session.rollback()
+        flash(f"保存失败：{e}", "danger")
+    return redirect(url_for("admin.storage_page"))
+
+
+@admin_bp.route("/storage/test", methods=["POST"])
+def storage_test():
+    """测试表单当前填写的连接参数（不落库）"""
+    point_id = request.form.get("point_id")
+    point = StoragePoint()
+    try:
+        if point_id:
+            saved = db.session.get(StoragePoint, int(point_id))
+            if saved is None:
+                abort(404)
+            point.password = saved.password  # 供表单密码留空时沿用
+        _apply_point_form(point, is_new=not point_id)
+        err = storage_service.test_connection(point)
+    except ValueError as e:
+        err = str(e)
+    if err:
+        flash(f"连接测试失败：{err}", "danger")
+    else:
+        flash("连接测试通过", "success")
+    return redirect(url_for("admin.storage_page"))
+
+
+@admin_bp.route("/storage/<int:point_id>/toggle", methods=["POST"])
+def storage_toggle(point_id):
+    point = db.session.get(StoragePoint, point_id)
+    if point is None:
+        abort(404)
+    if point.enabled and StoragePoint.query.filter_by(enabled=True).count() <= 1:
+        flash("至少需要保留一个启用的存储点", "danger")
+    else:
+        point.enabled = not point.enabled
+        db.session.commit()
+        flash("存储点已启用" if point.enabled else "存储点已停用（仍可读取，不再写入）", "success")
+    return redirect(url_for("admin.storage_page"))
+
+
+@admin_bp.route("/storage/<int:point_id>/delete", methods=["POST"])
+def storage_delete(point_id):
+    """删除存储点：mode=migrate 转移数据；mode=drop 删除数据（仅转移不可行时）"""
+    point = db.session.get(StoragePoint, point_id)
+    if point is None:
+        abort(404)
+    if StoragePoint.query.count() <= 1:
+        flash("至少需要保留一个存储点", "danger")
+        return redirect(url_for("admin.storage_page"))
+
+    mode = (request.form.get("mode") or "migrate").strip()
+    plan = storage_service.delete_plan(point)
+    try:
+        if mode == "migrate":
+            if plan["count"] and not plan["feasible"]:
+                raise ValueError(
+                    f"其他存储点可用空间不足（需 {plan['need']} 字节，可用 {plan['available']} 字节），"
+                    "无法转移，请选择删除数据")
+            moved = storage_service.migrate_point_data(point)
+            db.session.delete(point)
+            db.session.commit()
+            flash(f"已转移 {moved} 个文件到其他存储点，存储点「{point.name}」已删除", "success")
+        else:
+            if plan["count"] and plan["feasible"]:
+                raise ValueError("其他存储点空间充足，请先转移数据")
+            lost = storage_service.drop_point_data(point)
+            name = point.name
+            db.session.delete(point)
+            db.session.commit()
+            flash(f"已删除 {lost} 个文件实体并标记为「已丢失」，记录将在 7 天后自动清理"
+                  f"（存储点「{name}」）", "warning")
+    except (ValueError, storage_service.StorageError) as e:
+        db.session.rollback()
+        flash(f"删除失败：{e}", "danger")
+    return redirect(url_for("admin.storage_page"))
+
+
+# ---------- 设置 ----------
+
+@admin_bp.route("/settings")
+def settings_page():
+    return render_template("admin/settings.html", cfg=load_site_config_raw(),
+                           features=FEATURE_KEYS,
+                           update_info=update_service.read_status())
+
+
+@admin_bp.route("/settings/save", methods=["POST"])
+def settings_save():
+    form = request.form
+    try:
+        hsts_max_age = int(form.get("hsts_max_age") or 0)
+    except ValueError:
+        hsts_max_age = 0
+    if hsts_max_age <= 0:
+        hsts_max_age = HSTS_MAX_AGE
+    try:
+        hour = min(max(int(form.get("update_hour") or 0), 0), 23)
+        minute = min(max(int(form.get("update_minute") or 0), 0), 59)
+    except ValueError:
+        flash("自动更新时间格式不正确", "danger")
+        return redirect(url_for("admin.settings_page"))
+
+    sections = {
+        "project": {
+            "name": (form.get("project_name") or "").strip(),
+            "name_en": (form.get("project_name_en") or "").strip(),
+        },
+        "site": {"name": (form.get("site_name") or "").strip()},
+        "features": {key: bool(form.get(key)) for key in FEATURE_KEYS},
+        "https": {
+            "enabled": bool(form.get("https_enabled")),
+            "certfile": (form.get("https_certfile") or "").strip(),
+            "keyfile": (form.get("https_keyfile") or "").strip(),
+            "hsts": bool(form.get("https_hsts")),
+            "hsts_max_age": hsts_max_age,
+        },
+        "update": {
+            "enabled": bool(form.get("update_enabled")),
+            "check_on_login": bool(form.get("update_check_on_login")),
+            "hour": hour,
+            "minute": minute,
+            "repo": (form.get("update_repo") or "").strip(),
+            "proxy": (form.get("update_proxy") or "").strip(),
+        },
+    }
+    try:
+        save_site_config(sections)
+        flash("设置已保存，重启服务后生效", "success")
+    except (OSError, ValueError) as e:
+        flash(f"保存失败：{e}", "danger")
+    return redirect(url_for("admin.settings_page"))
+
+
+@admin_bp.route("/settings/update", methods=["POST"])
+def settings_update():
+    """手动检查更新；action=update 时立即下载并安装"""
+    apply_now = (request.form.get("action") or "check") == "update"
+    try:
+        status = update_service.check(apply_update=apply_now)
+    except Exception as e:
+        flash(f"更新失败：{e}", "danger")
+        return redirect(url_for("admin.settings_page"))
+
+    if status.get("error"):
+        flash(status["error"], "danger")
+    elif status.get("has_update"):
+        if apply_now:
+            flash(f"已开始更新到 {status['latest']}，服务稍后会自动重启", "success")
+        else:
+            flash(f"发现新版本 {status['latest']}，可点击「立即更新」安装", "info")
+    else:
+        flash(f"当前已是最新版本 {status.get('current')}", "success")
+    return redirect(url_for("admin.settings_page"))
+
+
+@admin_bp.route("/settings/restart", methods=["POST"])
+def settings_restart():
+    """重启后台服务（依赖安装脚本写入的 sudoers 放行命令）"""
+    trigger = current_app.config["RESTART_TRIGGER"]
+    try:
+        subprocess.run(["sudo", "-n", trigger], check=True, timeout=30,
+                       capture_output=True, text=True)
+        flash("已提交重启指令，服务将在数秒内重启", "success")
+    except (OSError, subprocess.SubprocessError) as e:
+        flash(f"重启失败：{e}", "danger")
+    return redirect(url_for("admin.settings_page"))

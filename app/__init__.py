@@ -4,7 +4,7 @@ import os
 from flask import Flask
 
 from app.extensions import db, login_manager, bcrypt
-from config import Config, load_site_config
+from config import Config, env_get, load_site_config
 
 
 def create_app(config_class=Config):
@@ -17,6 +17,7 @@ def create_app(config_class=Config):
     os.makedirs(app.config["STORAGE_ROOT"], exist_ok=True)
     os.makedirs(app.config["UPLOAD_TMP_ROOT"], exist_ok=True)
     os.makedirs(app.config["REMOTE_TMP_ROOT"], exist_ok=True)
+    os.makedirs(app.config["STORAGE_CACHE_ROOT"], exist_ok=True)
 
     # 初始化扩展
     db.init_app(app)
@@ -91,11 +92,14 @@ def create_app(config_class=Config):
     # 初始化数据库与默认套餐
     with app.app_context():
         db.create_all()
+        _migrate_addon_duration()
+        _migrate_storage_points()
         _seed_plans()
+        _seed_storage_points()
         _drop_legacy_speed_limit()
 
     # 后台远程下载 Worker（每个进程一个轮询线程，任务由数据库乐观认领防重复）
-    if os.environ.get("CLOUDPAN_DISABLE_BG") != "1" and app.config["ENABLE_REMOTE"]:
+    if env_get("DISABLE_BG") != "1" and app.config["ENABLE_REMOTE"]:
         from app.services import remote_service
         remote_service.start_worker(app)
 
@@ -112,6 +116,98 @@ def _drop_legacy_speed_limit():
         if plan.name in legacy and plan.speed_limit_bps == legacy[plan.name]:
             plan.speed_limit_bps = None
             changed = True
+    if changed:
+        db.session.commit()
+
+
+def _migrate_addon_duration():
+    """升级兼容：叠加包有效期由「天」改为「秒」
+
+    老库只有 duration_days 列，而新代码一律读 duration_seconds；
+    create_all 不会修改已存在的表，这里补列并按天换算成秒。
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(db.engine)
+    if "addon_packages" not in inspector.get_table_names():
+        return
+    columns = {c["name"] for c in inspector.get_columns("addon_packages")}
+    if "duration_seconds" in columns or "duration_days" not in columns:
+        return
+    with db.engine.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE addon_packages ADD COLUMN duration_seconds BIGINT NOT NULL DEFAULT 2592000"))
+        conn.execute(text(
+            "UPDATE addon_packages SET duration_seconds = duration_days * 86400"))
+
+
+def _migrate_storage_points():
+    """升级兼容：为文件与远程下载记录补充存储点归属、丢失标记列
+
+    create_all 不会修改已存在的表，老库需要手写 ALTER TABLE 补列。
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(db.engine)
+    tables = set(inspector.get_table_names())
+
+    if "files" in tables:
+        columns = {c["name"] for c in inspector.get_columns("files")}
+        stmts = []
+        if "storage_id" not in columns:
+            stmts.append("ALTER TABLE files ADD COLUMN storage_id INTEGER")
+        if "is_lost" not in columns:
+            stmts.append("ALTER TABLE files ADD COLUMN is_lost BOOLEAN NOT NULL DEFAULT 0")
+        if "lost_at" not in columns:
+            stmts.append("ALTER TABLE files ADD COLUMN lost_at DATETIME")
+        if stmts:
+            with db.engine.begin() as conn:
+                for sql in stmts:
+                    conn.execute(text(sql))
+
+    if "remote_downloads" in tables:
+        columns = {c["name"] for c in inspector.get_columns("remote_downloads")}
+        if "storage_id" not in columns:
+            with db.engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE remote_downloads ADD COLUMN storage_id INTEGER"))
+
+
+def _seed_storage_points():
+    """初始化默认本地存储点，并把历史文件回填到该存储点"""
+    from flask import current_app
+
+    from app.models import StoragePoint, File, RemoteDownload
+    from app.services import storage_service
+
+    if StoragePoint.query.count() == 0:
+        root = current_app.config["STORAGE_ROOT"]
+        db.session.add(StoragePoint(
+            name="本地存储",
+            kind="local",
+            path=root,
+            capacity_bytes=storage_service.detect_local_capacity(root),
+            enabled=True,
+            sort=0,
+        ))
+        db.session.commit()
+
+    root = current_app.config["STORAGE_ROOT"]
+    default_point = (
+        StoragePoint.query.filter_by(kind="local", path=root).first()
+        or StoragePoint.query.filter_by(kind="local")
+        .order_by(StoragePoint.sort, StoragePoint.id).first()
+        or StoragePoint.query.order_by(StoragePoint.sort, StoragePoint.id).first()
+    )
+    if default_point is None:
+        return
+
+    changed = File.query.filter(
+        File.storage_id.is_(None), File.storage_key.isnot(None)
+    ).update({"storage_id": default_point.id}, synchronize_session=False)
+    changed += RemoteDownload.query.filter(
+        RemoteDownload.storage_id.is_(None), RemoteDownload.storage_key.isnot(None)
+    ).update({"storage_id": default_point.id}, synchronize_session=False)
     if changed:
         db.session.commit()
 
@@ -158,20 +254,20 @@ def _seed_plans():
         addons = [
             # 流量包
             AddonPackage(type="traffic", name="1GB 流量", amount_bytes=1 * 1024 ** 3,
-                         price=Decimal("1.00"), duration_days=30, sort=1),
+                         price=Decimal("1.00"), duration_seconds=30 * 86400, sort=1),
             AddonPackage(type="traffic", name="10GB 流量", amount_bytes=10 * 1024 ** 3,
-                         price=Decimal("8.00"), duration_days=30, sort=2),
+                         price=Decimal("8.00"), duration_seconds=30 * 86400, sort=2),
             AddonPackage(type="traffic", name="100GB 流量", amount_bytes=100 * 1024 ** 3,
-                         price=Decimal("48.00"), duration_days=30, sort=3),
+                         price=Decimal("48.00"), duration_seconds=30 * 86400, sort=3),
             # 容量包
             AddonPackage(type="storage", name="5GB 容量", amount_bytes=5 * 1024 ** 3,
-                         price=Decimal("2.00"), duration_days=30, sort=4),
+                         price=Decimal("2.00"), duration_seconds=30 * 86400, sort=4),
             AddonPackage(type="storage", name="30GB 容量", amount_bytes=30 * 1024 ** 3,
-                         price=Decimal("6.00"), duration_days=30, sort=5),
+                         price=Decimal("6.00"), duration_seconds=30 * 86400, sort=5),
             AddonPackage(type="storage", name="100GB 容量", amount_bytes=100 * 1024 ** 3,
-                         price=Decimal("15.00"), duration_days=30, sort=6),
+                         price=Decimal("15.00"), duration_seconds=30 * 86400, sort=6),
             AddonPackage(type="storage", name="1TB 容量", amount_bytes=1 * 1024 ** 4,
-                         price=Decimal("100.00"), duration_days=30, sort=7),
+                         price=Decimal("100.00"), duration_seconds=30 * 86400, sort=7),
         ]
         db.session.add_all(addons)
         db.session.commit()

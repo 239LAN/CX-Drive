@@ -1,9 +1,9 @@
 """自动更新服务
 
 每日 0 点请求 GitHub Releases API 比对版本：发现新版本时下载发布脚本
-（CXDrive-release-<版本>.sh，与本仓库 Release 附件同名），校验 SHA-256 后
+（RealFiles-release-<版本>-install.sh，与本仓库 Release 附件同名），校验 SHA-256 后
 交由安装脚本写入的 sudoers 规则以 root 在独立 systemd 单元中执行覆盖更新
-（脱离 cx-pan.service 的 cgroup，避免更新脚本重启服务时自身被杀）。
+（脱离 realfiles.service 的 cgroup，避免更新脚本重启服务时自身被杀）。
 
 检查结果（最新版本 / 是否有更新 / 检查时间 / 错误）落盘到
 UPDATE_DIR/status.json，供页脚跨进程读取；是否真正安装由 config.yml 的
@@ -26,9 +26,10 @@ from config import (Config, UPDATE_ENABLED, UPDATE_PROXY, UPDATE_REPO,
                     load_site_config, normalize_proxy, read_version)
 
 _API_URL = "https://api.github.com/repos/{repo}/releases/latest"
-_USER_AGENT = "CX-Drive-Updater/1.0 (+https://github.com/{repo})"
-# 发布脚本命名：CXDrive-release-1.1.1.sh
-_ASSET_PATTERN = re.compile(r"^CXDrive-release-.*\.sh$", re.IGNORECASE)
+_USER_AGENT = "RealFiles-Updater/1.0 (+https://github.com/{repo})"
+# 发布脚本命名：RealFiles-release-1.1.1-install.sh；兼容改名前的 CXDrive-release-*.sh，
+# 以便旧版本实例也能自动升级到 RealFiles 的首个发布
+_ASSET_PATTERN = re.compile(r"^(?:RealFiles|CXDrive)-release-.*\.sh$", re.IGNORECASE)
 
 CHECK_TIMEOUT = 10       # 请求 GitHub API 超时（秒）
 DOWNLOAD_TIMEOUT = 60    # 下载发布脚本超时（秒）
@@ -223,7 +224,7 @@ def check(apply_update=None):
     asset, url, sha256 = _pick_asset(release)
     if not url:
         return _write_status(cfg, latest=latest, checked_at=checked_at,
-                             error=f"发布中未找到 {asset or 'CXDrive-release-*.sh'} 附件")
+                             error=f"发布中未找到 {asset or 'RealFiles-release-*-install.sh'} 附件")
     dest = os.path.join(cfg["UPDATE_DIR"], "current.sh")
     try:
         os.makedirs(cfg["UPDATE_DIR"], exist_ok=True)

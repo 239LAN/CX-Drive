@@ -26,6 +26,16 @@
                 {% endif %}
             </div>
         </div>
+        <div class="card mb-3">
+            <div class="card-body">
+                <h6>兑换码</h6>
+                <form method="post" action="{{ url_for('billing.redeem') }}" class="d-flex gap-2">
+                    <input type="text" name="code" class="form-control form-control-sm" placeholder="输入兑换码" required>
+                    <button class="btn btn-sm btn-outline-primary text-nowrap">兑换</button>
+                </form>
+                <div class="form-text">支持会员 / 余额 / 叠加包兑换码，一次性使用</div>
+            </div>
+        </div>
     </div>
 
     <div class="col-md-8">
@@ -45,10 +55,12 @@
                             <li>预览 {{ '支持' if p.allow_preview else '不支持' }}</li>
                         </ul>
                         {% if p.name != 'free' %}
-                        <form method="post" action="{{ url_for('billing.purchase_plan') }}">
+                        <form method="post" action="{{ url_for('billing.purchase_plan') }}" class="d-flex gap-1">
                             <input type="hidden" name="plan_id" value="{{ p.id }}">
-                            <button class="btn btn-primary w-100" {% if balance < p.monthly_price %}disabled title="余额不足"{% endif %}>开通</button>
+                            <input type="number" name="months" min="1" max="120" value="1" class="form-control form-control-sm" style="max-width:70px" title="购买月数">
+                            <button class="btn btn-sm btn-primary flex-grow-1" {% if balance < p.monthly_price %}disabled title="余额不足"{% endif %}>开通</button>
                         </form>
+                        <div class="form-text">按自然月顺延，可一次购买多个月</div>
                         {% endif %}
                     </div>
                 </div>
@@ -56,7 +68,7 @@
             {% endfor %}
         </div>
 
-        <h5 class="mt-4">叠加包（有效期 30 天）</h5>
+        <h5 class="mt-4">叠加包</h5>
         <div class="row">
             {% for a in addons %}
             <div class="col-md-3 mb-3">
@@ -66,7 +78,8 @@
                             {{ '流量包' if a.type == 'traffic' else '容量包' }}
                         </span>
                         <h6>{{ a.name }}</h6>
-                        <p class="text-primary">¥{{ a.price }}</p>
+                        <p class="text-primary mb-1">¥{{ a.price }}</p>
+                        <div class="small text-muted mb-2">有效期 {{ a.duration_seconds|human_duration }}</div>
                         <form method="post" action="{{ url_for('billing.purchase_addon') }}">
                             <input type="hidden" name="package_id" value="{{ a.id }}">
                             <button class="btn btn-sm btn-outline-primary w-100" {% if balance < a.price %}disabled title="余额不足"{% endif %}>购买</button>
@@ -74,6 +87,8 @@
                     </div>
                 </div>
             </div>
+            {% else %}
+            <div class="col-12 text-muted">暂无可购买的叠加包</div>
             {% endfor %}
         </div>
 

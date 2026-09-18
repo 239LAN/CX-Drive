@@ -1,8 +1,8 @@
-# 创想云盘
+# RealFiles
 
 **简体中文 | [English](README.en.md)**
 
-创想云盘是一个开箱即用、可私有部署的轻量网盘系统。基于 Flask，支持文件管理、在线预览、压缩解压、分享外链、远程下载、回收站、会员套餐与管理员后台，一条命令即可在主流 Linux 服务器上完成部署或覆盖更新。
+RealFiles 是一个开箱即用、可私有部署的轻量网盘系统。基于 Flask，支持文件管理、在线预览、压缩解压、分享外链、远程下载、回收站、会员套餐与管理员后台，一条命令即可在主流 Linux 服务器上完成部署或覆盖更新。
 
 ## 功能特性
 
@@ -14,8 +14,9 @@
 - **远程下载**：填写文件 URL 交由服务器后台抓取入库（`config.yml` 可开关）
 - **配额与会员**：容量、单文件大小、下载限速、月流量均可按套餐控制；支持叠加容量 / 流量包；已登录用户默认不限速
 - **管理后台**：用户管理、套餐 / 叠加包管理、余额调整、会员赠送、统计面板
+- **存储点管理**：支持多个存储位置（本地磁盘多挂载点 / FTP），每个存储点独立设置容量上限、达到 90% 视为已满，新文件按各点占用率均衡落盘；删除存储点可把数据均衡转移到其他存储点，空间不足时可选择删除数据（记录标记「已丢失」并在 7 天后清理）
 - **安全设计**：密码哈希存储、上传扩展名白名单 + 文件头嗅探（拒收伪装成常见格式的可执行程序与脚本）、分享密码防暴力破解（错误限次锁定）、外链仅限网页下载杜绝直链盗刷
-- **一键部署**：单文件安装包内嵌完整源码，Linux 上 `sudo bash CXDrive-release-<版本>.sh` 完成全新安装或覆盖更新
+- **一键部署**：单文件安装包内嵌完整源码，Linux 上 `sudo bash RealFiles-release-<版本>-install.sh` 完成全新安装或覆盖更新
 - **自动更新**：每天 0 点检查 GitHub Release，发现新版本自动覆盖更新（可在 `config.yml` 关闭，直连失败时回退公共代理）；页脚展示当前版本号与更新提示
 
 ## 技术栈
@@ -23,12 +24,12 @@
 - Python 3 + Flask + SQLAlchemy + Flask-Login
 - Bootstrap 5（CDN）+ Bootstrap Icons
 - SQLite（开箱即用，可自行切换到 MySQL / PostgreSQL）
-- 生产部署：Gunicorn + systemd（托管服务名 `cx-pan`）
+- 生产部署：Gunicorn + systemd（托管服务名 `realfiles`）
 
 ## 目录结构
 
 ```
-创想云盘/
+RealFiles/
 ├── app.py                  # 开发入口（python app.py，端口 5000）
 ├── wsgi.py                 # 生产入口（gunicorn wsgi:app）
 ├── config.py               # 应用配置
@@ -47,7 +48,7 @@
 │   └── utils/              # 工具函数与 Jinja 过滤器
 ├── build_install.py        # 生成单文件安装包（输出到 dist/）
 ├── install-template.sh     # 安装脚本模板（构建器用）
-└── dist/                   # 构建产物：CXDrive-release-<版本>.sh
+└── dist/                   # 构建产物：RealFiles-release-<版本>-install.sh
 ```
 
 ## 本地开发
@@ -74,13 +75,13 @@ python app.py            # 浏览器打开 http://127.0.0.1:5000
 
 ### 方式一：单文件安装包（推荐）
 
-将构建产物 `CXDrive-release-<版本>.sh` 上传到服务器后执行：
+将构建产物 `RealFiles-release-<版本>-install.sh` 上传到服务器后执行：
 
 ```bash
-sudo bash CXDrive-release-<版本>.sh
+sudo bash RealFiles-release-<版本>-install.sh
 ```
 
-脚本会自动完成：安装系统依赖 → 创建运行用户 → 部署代码到 `/opt/cx-pan` → 生成密钥 `.env` → 创建虚拟环境并安装依赖 → 注册并启动 systemd 服务 `cx-pan`。
+脚本会自动完成：安装系统依赖 → 创建运行用户 → 部署代码到 `/opt/realfiles` → 生成密钥 `.env` → 创建虚拟环境并安装依赖 → 注册并启动 systemd 服务 `realfiles`。
 
 ### 方式二：源码目录直接安装
 
@@ -95,35 +96,37 @@ sudo bash install-template.sh /path/to/源码目录
 
 **再次执行同样的命令即可**。数据库（`instance/`）、用户数据（`storage/ uploads/`）、密钥（`.env`）会被自动保留，仅更新代码与依赖并重启服务。
 
+> 从旧版（`/opt/cx-pan`，服务名 `cx-pan`）升级时无需手动处理：直接运行新版安装包，脚本会自动停用旧服务并迁移数据库、用户数据、`.env` 与 `config.yml` 到 `/opt/realfiles`。
+
 ### 首次使用
 
 1. 在页面注册管理员账号
 2. 提升为管理员：
 
 ```bash
-sudo /opt/cx-pan/venv/bin/python /opt/cx-pan/manage.py create-admin <你的用户名>
+sudo /opt/realfiles/venv/bin/python /opt/realfiles/manage.py create-admin <你的用户名>
 ```
 
 ### 常用运维命令
 
 ```bash
-systemctl status cx-pan                  # 查看服务状态
-journalctl -u cx-pan -f                  # 实时查看日志
-sudo /opt/cx-pan/venv/bin/python /opt/cx-pan/manage.py list-admin      # 管理员列表
-sudo /opt/cx-pan/venv/bin/python /opt/cx-pan/manage.py revoke-admin <用户名>  # 撤销管理员
+systemctl status realfiles                  # 查看服务状态
+journalctl -u realfiles -f                  # 实时查看日志
+sudo /opt/realfiles/venv/bin/python /opt/realfiles/manage.py list-admin      # 管理员列表
+sudo /opt/realfiles/venv/bin/python /opt/realfiles/manage.py revoke-admin <用户名>  # 撤销管理员
 ```
 
 ### 自动更新
 
 服务每天 0 点（服务器本地时间）请求 GitHub Releases API 比对版本：
 
-1. 有新版本时下载发布脚本 `CXDrive-release-<版本>.sh`（与 Release 附件同名）到 `/opt/cx-pan/instance/update/current.sh`，并校验 sha256；
-2. 经安装脚本写入的 sudoers 规则（`/etc/sudoers.d/cx-pan-update`，仅放行 `/usr/local/sbin/cx-pan-auto-update`）以 root 在独立 systemd 单元中执行覆盖更新，避免重启服务时中断更新；
-3. 数据库、用户数据、`.env`、`config.yml` 均保留；更新日志见 `/opt/cx-pan/instance/update/update.log`。
+1. 有新版本时下载发布脚本 `RealFiles-release-<版本>-install.sh`（与 Release 附件同名）到 `/opt/realfiles/instance/update/current.sh`，并校验 sha256；
+2. 经安装脚本写入的 sudoers 规则（`/etc/sudoers.d/realfiles-update`，仅放行 `/usr/local/sbin/realfiles-auto-update`）以 root 在独立 systemd 单元中执行覆盖更新，避免重启服务时中断更新；
+3. 数据库、用户数据、`.env`、`config.yml` 均保留；更新日志见 `/opt/realfiles/instance/update/update.log`。
 
 直连 `github.com` / `api.github.com` 失败时（例如国内服务器），会自动回退到公共 GH 代理
 `https://v4.gh-proxy.org/`，即把原地址拼在代理之后
-（`https://v4.gh-proxy.org/https://github.com/.../CXDrive-release-<版本>.sh`）。
+（`https://v4.gh-proxy.org/https://github.com/.../RealFiles-release-<版本>-install.sh`）。
 始终是「先直连，失败才走代理」，代理不可用时会记录错误并保留原有更新状态。
 
 在 `config.yml` 中调整：
@@ -131,7 +134,7 @@ sudo /opt/cx-pan/venv/bin/python /opt/cx-pan/manage.py revoke-admin <用户名> 
 ```yaml
 update:
   enabled: true                          # false = 关闭自动安装，仍每天检查并在页脚提示新版本
-  repo: 239LAN/CX-Drive                  # 更新来源（GitHub 仓库 owner/name）
+  repo: 239LAN/RealFiles                 # 更新来源（GitHub 仓库 owner/name）
   proxy: https://v4.gh-proxy.org/        # 直连失败时的回退代理，留空则禁用
 ```
 
@@ -141,7 +144,7 @@ update:
 
 ```bash
 python build_install.py
-# 读取根目录 VERSION，输出 dist/CXDrive-release-<版本>.sh
+# 读取根目录 VERSION，输出 dist/RealFiles-release-<版本>-install.sh
 # 该文件既是服务器上的安装脚本，也直接作为 GitHub Release 附件上传（自动更新只认这个命名）
 ```
 
@@ -149,13 +152,15 @@ python build_install.py
 
 ## 配置项
 
-部署后可通过 `/opt/cx-pan/.env` 调整：
+部署后可通过 `/opt/realfiles/.env` 调整：
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `SECRET_KEY` | 安装时随机生成 | 会话签名密钥，请勿外泄 |
-| `CLOUDPAN_BIND` | `0.0.0.0:4280` | 监听地址与端口 |
-| `CLOUDPAN_WORKERS` | 自动按 CPU 计算 | Gunicorn 进程数 |
+| `REALFILES_BIND` | `0.0.0.0:4280` | 监听地址与端口 |
+| `REALFILES_WORKERS` | 自动按 CPU 计算 | Gunicorn 进程数 |
+
+> 改名前的旧前缀 `CLOUDPAN_BIND` / `CLOUDPAN_WORKERS` 仍可读取，仅用于兼容已有部署；新部署请使用 `REALFILES_` 前缀。
 
 ## 说明
 
@@ -165,6 +170,6 @@ python build_install.py
 
 ## License
 
-创想云盘 © 2026 [239LAN](https://github.com/239LAN)，采用 **GNU Affero General Public License v3.0** 开源，详见 [LICENSE](LICENSE)。
+RealFiles © 2026 [239LAN](https://github.com/239LAN)，采用 **GNU Affero General Public License v3.0** 开源，详见 [LICENSE](LICENSE)。
 
 按 AGPL-3.0 要求：基于本项目提供网络服务（含二次开发、修改后部署）的一方，也必须以相同协议向服务使用者开放其完整源代码。

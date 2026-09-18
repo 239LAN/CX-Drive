@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block title %}存储点 - {{ site_name }}{% endblock %}
+{% block content %}
+<h4 class="mb-3"><i class="bi bi-gear"></i> 管理后台</h4>
+{% include "admin/_nav.html" %}
+
+<div class="alert alert-info py-2 small">
+    <i class="bi bi-info-circle"></i>
+    每个存储点必填容量上限，占用达到容量的 <strong>90%</strong> 即视为已满；新文件按各存储点占用率均衡写入占用率最低的可用存储点。
+    停用后该存储点仍可读取，但不再接收新文件。
+</div>
+
+<div class="d-flex justify-content-between align-items-center mb-2">
+    <h5 class="mb-0"><i class="bi bi-hdd-stack"></i> 存储点</h5>
+    <button class="btn btn-sm btn-success" data-bs-toggle="modal" data-bs-target="#pointModal"
+            onclick="openPointEdit(null)">＋ 新建存储点</button>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body p-0">
+        <table class="table table-sm table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>ID</th><th>名称</th><th>类型</th><th>位置</th>
+                    <th style="width:220px">占用</th><th>文件数</th><th>排序</th><th>状态</th><th style="width:260px">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in rows %}
+                {% set p = r.point %}{% set s = r.stats %}
+                <tr>
+                    <td>{{ p.id }}</td>
+                    <td>{{ p.name }}</td>
+                    <td>
+                        {% if p.kind == 'local' %}
+                        <span class="badge bg-secondary">本地磁盘</span>
+                        {% else %}
+                        <span class="badge bg-info text-dark">FTP</span>
+                        {% endif %}
+                    </td>
+                    <td class="small text-break">
+                        {% if p.kind == 'local' %}
+                        <code>{{ p.path }}</code>
+                        {% else %}
+                        <code>{{ p.username or 'anonymous' }}@{{ p.host }}:{{ p.port }}{{ p.remote_dir }}</code>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <div class="progress" style="height:14px">
+                            <div class="progress-bar {{ 'bg-danger' if s.is_full else ('bg-warning' if s.ratio >= 0.7 else 'bg-success') }}"
+                                 style="width: {{ (s.ratio * 100)|round(1) }}%"></div>
+                        </div>
+                        <div class="small text-muted">
+                            {{ s.used|human_size }} / {{ s.capacity|human_size }}
+                            （{{ (s.ratio * 100)|round(1) }}%，可用 {{ s.remaining|human_size }}）
+                            {% if s.is_full %}<span class="badge bg-danger">已满</span>{% endif %}
+                        </div>
+                    </td>
+                    <td>{{ s.files }}</td>
+                    <td>{{ p.sort }}</td>
+                    <td>
+                        {% if p.enabled %}
+                        <span class="badge bg-success">启用</span>
+                        {% else %}
+                        <span class="badge bg-secondary">停用</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#pointModal"
+                                onclick="openPointEdit(this)"
+                                data-id="{{ p.id }}" data-name="{{ p.name }}" data-kind="{{ p.kind }}"
+                                data-capacity="{{ (p.capacity_bytes / 1024**3)|round(2) }}"
+                                data-sort="{{ p.sort }}" data-enabled="{{ 1 if p.enabled else 0 }}"
+                                data-path="{{ p.path or '' }}" data-host="{{ p.host or '' }}"
+                                data-port="{{ p.port or 21 }}" data-username="{{ p.username or '' }}"
+                                data-remotedir="{{ p.remote_dir or '' }}">编辑</button>
+                        <form method="post" action="{{ url_for('admin.storage_test') }}" class="d-inline">
+                            <input type="hidden" name="point_id" value="{{ p.id }}">
+                            <button class="btn btn-sm btn-outline-secondary" title="测试连接">测试</button>
+                        </form>
+                        <form method="post" action="{{ url_for('admin.storage_toggle', point_id=p.id) }}" class="d-inline">
+                            <button class="btn btn-sm btn-outline-warning">{{ '停用' if p.enabled else '启用' }}</button>
+                        </form>
+                        <button class="btn btn-sm btn-outline-danger" data-bs-toggle="modal" data-bs-target="#delPointModal"
+                                onclick="openDelPoint(this)"
+                                data-action="{{ url_for('admin.storage_delete', point_id=p.id) }}"
+                                data-name="{{ p.name }}" data-count="{{ r.plan.count }}"
+                                data-need="{{ r.plan.need|human_size }}" data-avail="{{ r.plan.available|human_size }}"
+                                data-points="{{ r.plan.points }}" data-feasible="{{ 1 if r.plan.feasible else 0 }}"
+                                {% if rows|length <= 1 %}disabled title="至少保留一个存储点"{% endif %}>删除</button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- 存储点编辑弹窗 -->
+<div class="modal fade" id="pointModal" tabindex="-1">
+    <div class="modal-dialog modal-lg"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">存储点信息</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+        <form method="post" action="{{ url_for('admin.storage_save') }}">
+            <div class="modal-body row g-3">
+                <input type="hidden" name="point_id" id="p_id">
+                <div class="col-md-4"><label class="form-label">名称</label>
+                    <input type="text" name="name" id="p_name" class="form-control" required></div>
+                <div class="col-md-4"><label class="form-label">类型</label>
+                    <select name="kind" id="p_kind" class="form-select" onchange="togglePointKind()">
+                        <option value="local">本地磁盘</option>
+                        <option value="ftp">FTP</option>
+                    </select></div>
+                <div class="col-md-4"><label class="form-label">容量（GB，必填且大于 0）</label>
+                    <input type="number" step="0.01" min="0.01" name="capacity_gb" id="p_capacity"
+                           class="form-control" required placeholder="如 {{ suggested_gb }}"></div>
+
+                <div class="col-12 p-kind-local">
+                    <label class="form-label">本地存储目录（挂载点绝对路径）</label>
+                    <input type="text" name="path" id="p_path" class="form-control"
+                           placeholder="如 /mnt/disk2/realfiles">
+                    <div class="form-text">默认数据目录：<code>{{ default_root }}</code>；目录需已存在且可写。</div>
+                </div>
+
+                <div class="col-md-6 p-kind-ftp d-none"><label class="form-label">FTP 服务器</label>
+                    <input type="text" name="host" id="p_host" class="form-control" placeholder="如 192.168.1.10"></div>
+                <div class="col-md-3 p-kind-ftp d-none"><label class="form-label">端口</label>
+                    <input type="number" name="port" id="p_port" class="form-control" value="21"></div>
+                <div class="col-md-3 p-kind-ftp d-none"><label class="form-label">用户名</label>
+                    <input type="text" name="username" id="p_username" class="form-control" placeholder="留空为 anonymous"></div>
+                <div class="col-md-6 p-kind-ftp d-none"><label class="form-label">密码</label>
+                    <input type="password" name="password" id="p_password" class="form-control"
+                           placeholder="留空表示不修改" autocomplete="new-password"></div>
+                <div class="col-md-6 p-kind-ftp d-none"><label class="form-label">远端目录</label>
+                    <input type="text" name="remote_dir" id="p_remote_dir" class="form-control" placeholder="/realfiles"></div>
+
+                <div class="col-md-4"><label class="form-label">排序（小在前）</label>
+                    <input type="number" name="sort" id="p_sort" class="form-control" value="0"></div>
+                <div class="col-md-4 d-flex align-items-end">
+                    <div class="form-check"><input type="checkbox" name="enabled" class="form-check-input" id="p_enabled" checked>
+                        <label class="form-check-label" for="p_enabled">启用（停用后仅可读）</label></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+                <button class="btn btn-primary">保存</button>
+            </div>
+        </form>
+    </div></div>
+</div>
+
+<!-- 删除存储点弹窗 -->
+<div class="modal fade" id="delPointModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">删除存储点</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+        <form method="post" id="delPointForm">
+            <input type="hidden" name="mode" id="dp_mode">
+            <div class="modal-body"><p id="dp_text" class="mb-0 small"></p></div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+                <button class="btn btn-danger" id="dp_btn">删除</button>
+            </div>
+        </form>
+    </div></div>
+</div>
+
+<script>
+function togglePointKind() {
+    const kind = document.getElementById('p_kind').value;
+    document.querySelectorAll('.p-kind-local').forEach(
+        el => el.classList.toggle('d-none', kind !== 'local'));
+    document.querySelectorAll('.p-kind-ftp').forEach(
+        el => el.classList.toggle('d-none', kind !== 'ftp'));
+}
+
+function openPointEdit(el) {
+    const f = id => document.getElementById(id);
+    if (!el) {
+        f('p_id').value = '';
+        f('p_name').value = '';
+        f('p_kind').value = 'local';
+        f('p_capacity').value = '';
+        f('p_path').value = '';
+        f('p_host').value = '';
+        f('p_port').value = '21';
+        f('p_username').value = '';
+        f('p_password').value = '';
+        f('p_remote_dir').value = '';
+        f('p_sort').value = '0';
+        f('p_enabled').checked = true;
+        togglePointKind();
+        return;
+    }
+    const d = el.dataset;
+    f('p_id').value = d.id;
+    f('p_name').value = d.name;
+    f('p_kind').value = d.kind;
+    f('p_capacity').value = d.capacity;
+    f('p_path').value = d.path;
+    f('p_host').value = d.host;
+    f('p_port').value = d.port;
+    f('p_username').value = d.username;
+    f('p_password').value = '';
+    f('p_remote_dir').value = d.remotedir;
+    f('p_sort').value = d.sort;
+    f('p_enabled').checked = d.enabled === '1';
+    togglePointKind();
+}
+
+function openDelPoint(el) {
+    const d = el.dataset;
+    const n = parseInt(d.count || '0', 10);
+    const feasible = d.feasible === '1';
+    const form = document.getElementById('delPointForm');
+    const btn = document.getElementById('dp_btn');
+    const text = document.getElementById('dp_text');
+    form.action = d.action;
+
+    if (n === 0) {
+        document.getElementById('dp_mode').value = 'drop';
+        btn.className = 'btn btn-danger';
+        btn.textContent = '删除存储点';
+        text.textContent = `存储点「${d.name}」上没有文件，可直接删除。`;
+        form.dataset.confirm = `确定删除存储点「${d.name}」？`;
+    } else if (feasible) {
+        document.getElementById('dp_mode').value = 'migrate';
+        btn.className = 'btn btn-primary';
+        btn.textContent = '转移数据并删除';
+        text.textContent = `存储点「${d.name}」上有 ${n} 个文件（合计 ${d.need}），`
+            + `另外 ${d.points} 个存储点可用空间共 ${d.avail}，将按占用率平均转移后再删除。`;
+        form.dataset.confirm = `确定把 ${n} 个文件转移到其他存储点并删除该存储点？`;
+    } else {
+        document.getElementById('dp_mode').value = 'drop';
+        btn.className = 'btn btn-danger';
+        btn.textContent = '删除数据并删除';
+        text.textContent = `存储点「${d.name}」上有 ${n} 个文件（合计 ${d.need}），`
+            + `其他存储点可用空间不足（共 ${d.avail}），无法转移。`
+            + `删除后用户将看到「文件已丢失」提示，记录将在 7 天后自动清理。`;
+        form.dataset.confirm = `确定删除这 ${n} 个文件？此操作不可恢复！`;
+    }
+}
+</script>
+{% endblock %}

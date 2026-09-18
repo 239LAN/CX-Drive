@@ -1,4 +1,5 @@
 """通用工具函数"""
+import calendar
 import mimetypes
 import os
 import re
@@ -201,3 +202,70 @@ def human_speed(bps) -> str:
     if bps is None:
         return "不限"
     return human_size(bps) + "/s"
+
+
+# ---------------- 时长工具 ----------------
+# 可选单位（月按 30 天折算，便于统一存秒）
+DURATION_UNITS = {
+    "second": 1,
+    "minute": 60,
+    "hour": 3600,
+    "day": 86400,
+    "month": 2592000,
+}
+DURATION_UNIT_LABELS = {
+    "second": "秒",
+    "minute": "分",
+    "hour": "时",
+    "day": "天",
+    "month": "月",
+}
+# 展示时自动换算的单位（不含月，避免 30 天被写成 1 月）
+_DISPLAY_UNITS = (("day", 86400), ("hour", 3600), ("minute", 60))
+
+
+def parse_duration(value, unit="second") -> int:
+    """「数值 + 单位」换算为整数秒"""
+    try:
+        num = float(value or 0)
+    except (TypeError, ValueError):
+        raise ValueError("时长格式不正确")
+    factor = DURATION_UNITS.get(str(unit or "").lower())
+    if factor is None:
+        raise ValueError("时长单位不支持")
+    seconds = int(round(num * factor))
+    if seconds <= 0:
+        raise ValueError("时长必须大于 0")
+    return seconds
+
+
+def split_duration(seconds):
+    """秒数拆成「最合适的单位 + 数值」，个位尽量保留非零数"""
+    seconds = int(seconds or 0)
+    if seconds <= 0:
+        return 0, "second"
+    for unit, factor in _DISPLAY_UNITS:
+        if seconds >= factor:
+            value = seconds / factor
+            # 整除时返回整数，便于表单回填（30 而不是 30.0）
+            return (int(value) if value.is_integer() else round(value, 2)), unit
+    return seconds, "second"
+
+
+def human_duration(seconds) -> str:
+    """秒数转为可读时长，自动换算单位"""
+    if seconds is None:
+        return "不限"
+    value, unit = split_duration(seconds)
+    text = f"{value:.2f}".rstrip("0").rstrip(".") if isinstance(value, float) else str(value)
+    return f"{text}{DURATION_UNIT_LABELS[unit]}"
+
+
+def add_months(dt: datetime, months: int) -> datetime:
+    """按自然月顺延（精确月），当月天数不足时取月末"""
+    months = int(months)
+    total = dt.month - 1 + months
+    year = dt.year + total // 12
+    month = total % 12 + 1
+    last_day = calendar.monthrange(year, month)[1]
+    return dt.replace(year=year, month=month, day=min(dt.day, last_day))

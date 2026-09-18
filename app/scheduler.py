@@ -1,12 +1,12 @@
-"""定时任务：流量跨月重置、到期锁定、30 天缓冲期后硬删除、每日 0 点检查更新"""
-import os
+"""定时任务：流量跨月重置、到期锁定、30 天缓冲期后硬删除、缓存/丢失记录清理、每日 0 点检查更新"""
 import threading
 from datetime import timedelta
 
 from app.extensions import db
 from app.models import User, MembershipPlan, UserAddon
-from app.services import file_service, update_service
+from app.services import file_service, storage_service, update_service
 from app.utils.helpers import utcnow
+from config import env_get
 
 
 def reset_monthly_traffic():
@@ -58,11 +58,26 @@ def hard_delete_locked_users():
     db.session.commit()
 
 
+def clean_storage_cache():
+    """清理超期的 FTP 本地缓存文件"""
+    try:
+        storage_service.clean_cache()
+    except OSError:
+        pass
+
+
+def purge_lost_files():
+    """清理超过保留期（7 天）的已丢失文件记录"""
+    storage_service.purge_lost_records()
+
+
 def run_all():
     reset_monthly_traffic()
     expire_memberships()
     expire_addons()
     hard_delete_locked_users()
+    clean_storage_cache()
+    purge_lost_files()
 
 
 def check_update():
@@ -85,10 +100,16 @@ def start_scheduler(app):
             check_update()
 
     scheduler.add_job(job, "interval", hours=1, id="maintenance")
-    # 每天 0 点（服务器本地时间）检查更新：关闭自动更新时仍检查，仅不安装
-    scheduler.add_job(update_job, CronTrigger(hour=0, minute=0), id="auto_update")
+    # 每日定时（默认 0 点，可在管理后台设置页调整）检查更新：
+    # 关闭自动更新时仍检查，仅不安装
+    scheduler.add_job(
+        update_job,
+        CronTrigger(hour=app.config.get("UPDATE_HOUR", 0),
+                    minute=app.config.get("UPDATE_MINUTE", 0)),
+        id="auto_update",
+    )
     scheduler.start()
-    if os.environ.get("CLOUDPAN_DISABLE_BG") != "1":
+    if env_get("DISABLE_BG") != "1":
         # 启动后立即检查一次，页脚无需等到次日 0 点才显示版本信息
         threading.Thread(target=update_job, daemon=True, name="update-check").start()
     return scheduler

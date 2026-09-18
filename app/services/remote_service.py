@@ -6,7 +6,6 @@
 """
 import hashlib
 import os
-import shutil
 import socket
 import threading
 import time
@@ -17,7 +16,7 @@ from urllib.request import Request, urlopen
 
 from app.extensions import db
 from app.models import File, RemoteDownload, User
-from app.services import file_service
+from app.services import file_service, storage_service
 from app.services.quota_service import consume_traffic, effective_quota
 from app.utils.helpers import (
     gen_storage_key, human_size, safe_filename, utcnow,
@@ -37,7 +36,7 @@ TASK_MAX_SECONDS = 3600   # 单任务最长执行 1 小时
 SWEEP_IDLE_SECONDS = 180
 
 _USER_AGENT = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-               "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 CX-Drive-Remote/1.0")
+               "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 RealFiles-Remote/1.0")
 
 _started = False
 _started_lock = threading.Lock()
@@ -332,9 +331,8 @@ def _finalize(task, written: int, md5hex: str, part: str):
     check_upload_security(name, read_file_head(part))
     ext = os.path.splitext(name)[1]
     storage_key = gen_storage_key(ext)
-    dest = file_service.get_physical_path(storage_key)
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    shutil.move(part, dest)
+    point = storage_service.pick_point(written)
+    storage_service.write_from_path(point, storage_key, part, move=True)
 
     f = File(
         user_id=user.id,
@@ -343,12 +341,14 @@ def _finalize(task, written: int, md5hex: str, part: str):
         is_dir=False,
         size=written,
         storage_key=storage_key,
+        storage_id=point.id,
         md5=md5hex,
     )
     db.session.add(f)
     db.session.flush()  # 先取得自增主键，再回填到任务记录
     consume_traffic(user, written, "upload")
     task.storage_key = storage_key
+    task.storage_id = point.id
     task.file_id = f.id
     task.downloaded_bytes = written
     task.status = "done"

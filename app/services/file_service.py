@@ -1,6 +1,5 @@
 """文件核心业务逻辑"""
 import os
-import shutil
 import tempfile
 import zipfile
 from datetime import datetime
@@ -9,7 +8,9 @@ from flask import current_app
 
 from app.extensions import db
 from app.models import File, User
+from app.services import storage_service
 from app.services.quota_service import QuotaError, check_upload, effective_quota
+from app.services.storage_service import StorageFullError
 from app.utils.helpers import (
     safe_filename, gen_storage_key, utcnow, guess_mimetype,
     check_upload_security, read_file_head, extension_allowed, UPLOAD_SNIFF_LEN,
@@ -19,13 +20,30 @@ from app.utils.helpers import (
 MAX_ZIP_ENTRIES = 2000
 
 
-def _storage_path(storage_key: str) -> str:
-    root = current_app.config["STORAGE_ROOT"]
-    # 用前两位做子目录分片，避免单目录文件过多
-    sub = storage_key[:2]
-    d = os.path.join(root, sub)
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, storage_key)
+def _remove_quietly(path: str):
+    if path and os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _pick_point(need_bytes: int):
+    """按各存储点占用率均衡选择写入点；全部已满时按容量不足提示"""
+    try:
+        return storage_service.pick_point(need_bytes)
+    except StorageFullError as e:
+        raise QuotaError(str(e))
+
+
+def _node_point(node):
+    """文件记录所属的存储点（兼容历史数据回退到默认点）"""
+    return storage_service.get_point(node.storage_id)
+
+
+def _storage_path(storage_key: str, point=None) -> str:
+    """物理实体的本地可读路径（FTP 存储点会先拉取到本地缓存）"""
+    return storage_service.read_path(point, storage_key)
 
 
 def get_dir_by_id(user: User, parent_id):
@@ -124,8 +142,8 @@ def save_uploaded_file(user: User, parent_id, filename, size, file_obj, md5=None
     ext = os.path.splitext(filename)[1]
     storage_key = gen_storage_key(ext)
 
-    dest = _storage_path(storage_key)
-    file_obj.save(dest)
+    point = _pick_point(size)
+    storage_service.write_stream(point, storage_key, file_obj.stream)
 
     f = File(
         user_id=user.id,
@@ -135,6 +153,7 @@ def save_uploaded_file(user: User, parent_id, filename, size, file_obj, md5=None
         size=size,
         mime=mime,
         storage_key=storage_key,
+        storage_id=point.id,
         md5=md5,
     )
     db.session.add(f)
@@ -149,8 +168,8 @@ def save_chunked_file(user: User, parent_id, filename, total_size, tmp_path, md5
     parent = get_dir_by_id(user, parent_id)
     ext = os.path.splitext(filename)[1]
     storage_key = gen_storage_key(ext)
-    dest = _storage_path(storage_key)
-    shutil.move(tmp_path, dest)
+    point = _pick_point(total_size)
+    storage_service.write_from_path(point, storage_key, tmp_path, move=True)
 
     f = File(
         user_id=user.id,
@@ -160,6 +179,7 @@ def save_chunked_file(user: User, parent_id, filename, total_size, tmp_path, md5
         size=total_size,
         mime=mime,
         storage_key=storage_key,
+        storage_id=point.id,
         md5=md5,
     )
     db.session.add(f)
@@ -167,11 +187,15 @@ def save_chunked_file(user: User, parent_id, filename, total_size, tmp_path, md5
     return f
 
 
-def create_reference(user: User, parent_id, filename, size, mime, md5, storage_key):
+def create_reference(user: User, parent_id, filename, size, mime, md5, storage_key, storage_id=None):
     """秒传：复用已有物理文件，在目标位置创建一条引用记录"""
     filename = safe_filename(filename)
+    point = storage_service.get_point(storage_id)
+    if point is None:
+        raise QuotaError("尚未配置可用的存储点")
     # 复用物理文件前同样做安全校验，避免绕过上传检查
-    check_upload_security(filename, read_file_head(_storage_path(storage_key)))
+    head = storage_service.read_head(point, storage_key, UPLOAD_SNIFF_LEN)
+    check_upload_security(filename, head)
     parent = get_dir_by_id(user, parent_id)
     f = File(
         user_id=user.id,
@@ -181,6 +205,7 @@ def create_reference(user: User, parent_id, filename, size, mime, md5, storage_k
         size=size,
         mime=mime,
         storage_key=storage_key,
+        storage_id=point.id,
         md5=md5,
     )
     db.session.add(f)
@@ -288,17 +313,20 @@ def _copy_node(user: User, src: File, target_parent: File, name: str):
             _copy_node(user, child, new_dir, child.name)
         return new_dir
     else:
-        # 复制物理文件
-        src_path = _storage_path(src.storage_key)
+        if src.is_lost:
+            raise ValueError(f"文件 {src.name} 已丢失，无法复制")
+        # 复制物理文件到新的存储点（按占用率均衡选择）
+        src_path = _storage_path(src.storage_key, _node_point(src))
         if not os.path.exists(src_path):
             raise ValueError(f"文件 {src.name} 物理实体丢失，无法复制")
         ext = os.path.splitext(name)[1]
         storage_key = gen_storage_key(ext)
-        shutil.copy2(src_path, _storage_path(storage_key))
+        point = _pick_point(src.size)
+        storage_service.write_from_path(point, storage_key, src_path, move=False)
         new_f = File(user_id=user.id,
                      parent_id=target_parent.id if target_parent else None,
                      name=name, is_dir=False, size=src.size, mime=src.mime,
-                     storage_key=storage_key, md5=src.md5)
+                     storage_key=storage_key, storage_id=point.id, md5=src.md5)
         db.session.add(new_f)
         return new_f
 
@@ -357,12 +385,7 @@ def _hard_delete_node(user: User, node: File):
             File.id != node.id,
         ).count()
         if refs == 0:
-            p = _storage_path(node.storage_key)
-            if os.path.exists(p):
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
+            storage_service.delete_object_quietly(_node_point(node), node.storage_key)
     db.session.delete(node)
 
 
@@ -429,8 +452,8 @@ def add_dir_to_zip(zf: zipfile.ZipFile, node: File, prefix: str):
         arc = prefix + child.name
         if child.is_dir:
             add_dir_to_zip(zf, child, arc + "/")
-        else:
-            p = _storage_path(child.storage_key)
+        elif not child.is_lost:
+            p = _storage_path(child.storage_key, _node_point(child))
             if os.path.exists(p):
                 zf.write(p, arc)
 
@@ -468,31 +491,30 @@ def compress(user: User, file_ids, parent_id=None, name=None) -> File:
     os.close(fd)
 
     storage_key = gen_storage_key(".zip")
-    dest = _storage_path(storage_key)
+    point = None
     try:
         with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
             for n in nodes:
                 if n.is_dir:
                     add_dir_to_zip(zf, n, n.name + "/")
-                else:
-                    p = _storage_path(n.storage_key)
+                elif not n.is_lost:
+                    p = _storage_path(n.storage_key, _node_point(n))
                     if os.path.exists(p):
                         zf.write(p, n.name)
         size = os.path.getsize(tmp_path)
         check_upload(user, size)
-        shutil.move(tmp_path, dest)
+        point = _pick_point(size)
+        storage_service.write_from_path(point, storage_key, tmp_path, move=True)
     except Exception:
-        for p in (tmp_path, dest):
-            if os.path.exists(p):
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
+        _remove_quietly(tmp_path)
+        if point is not None:
+            storage_service.delete_object_quietly(point, storage_key)
         raise
 
     f = File(user_id=user.id, parent_id=parent.id if parent else None,
              name=zip_name, is_dir=False, size=size,
-             mime="application/zip", storage_key=storage_key)
+             mime="application/zip", storage_key=storage_key,
+             storage_id=point.id if point else None)
     db.session.add(f)
     db.session.commit()
     return f
@@ -531,17 +553,22 @@ def _ensure_zip_dirs(user: User, root, parts, cache):
 
 
 def _write_extracted(user: User, parent, name: str, src, limit: int):
-    """把压缩包内的单个条目落盘并建记录，返回 (大小, storage_key)"""
+    """把压缩包内的单个条目落盘并建记录，返回 (大小, storage_key, 存储点)"""
     name = safe_filename(name)
     storage_key = gen_storage_key(os.path.splitext(name)[1])
-    dest = _storage_path(storage_key)
     # 与上传走同一套安全校验，避免借解压绕过白名单
     head = src.read(UPLOAD_SNIFF_LEN)
     check_upload_security(name, head)
 
+    tmp_root = current_app.config["UPLOAD_TMP_ROOT"]
+    os.makedirs(tmp_root, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=tmp_root, suffix=".part")
+    os.close(fd)
+
     size = 0
+    point = None
     try:
-        with open(dest, "wb") as out:
+        with open(tmp_path, "wb") as out:
             if head:
                 out.write(head)
                 size = len(head)
@@ -553,19 +580,20 @@ def _write_extracted(user: User, parent, name: str, src, limit: int):
                 if size > limit:
                     raise QuotaError("解压后体积超出可用额度（上限为您的单文件/容量限制）")
                 out.write(chunk)
+        point = _pick_point(size)
+        storage_service.write_from_path(point, storage_key, tmp_path, move=True)
     except Exception:
-        if os.path.exists(dest):
-            try:
-                os.remove(dest)
-            except OSError:
-                pass
+        _remove_quietly(tmp_path)
+        if point is not None:
+            storage_service.delete_object_quietly(point, storage_key)
         raise
 
     f = File(user_id=user.id, parent_id=parent.id if parent else None,
              name=_unique_copy_name(user, parent, name), is_dir=False, size=size,
-             mime=guess_mimetype(name), storage_key=storage_key)
+             mime=guess_mimetype(name), storage_key=storage_key,
+             storage_id=point.id)
     db.session.add(f)
-    return size, storage_key
+    return size, storage_key, point
 
 
 def extract_zip(user: User, file_id, parent_id=None):
@@ -576,7 +604,9 @@ def extract_zip(user: User, file_id, parent_id=None):
     f = _get_owned_file(user, file_id)
     if f.is_dir:
         raise ValueError("请选择 zip 压缩包文件")
-    path = _storage_path(f.storage_key)
+    if f.is_lost:
+        raise ValueError("文件已丢失")
+    path = _storage_path(f.storage_key, _node_point(f))
     if not os.path.exists(path):
         raise ValueError("文件实体丢失")
     if not zipfile.is_zipfile(path):
@@ -611,23 +641,18 @@ def extract_zip(user: User, file_id, parent_id=None):
                 target = _ensure_zip_dirs(user, parent, parts[:-1], dirs)
                 with zf.open(info) as src:
                     try:
-                        size, key = _write_extracted(user, target, name, src, total - written)
+                        size, key, point = _write_extracted(user, target, name, src, total - written)
                     except ValueError as e:
                         # 内容嗅探不通过（伪装成普通文件的程序/脚本）同样跳过
                         skipped.append(f"{name}（{e}）")
                         continue
-                created.append(key)
+                created.append((point, key))
                 written += size
                 count += 1
         except Exception:
             db.session.rollback()
-            for key in created:
-                p = _storage_path(key)
-                if os.path.exists(p):
-                    try:
-                        os.remove(p)
-                    except OSError:
-                        pass
+            for point, key in created:
+                storage_service.delete_object_quietly(point, key)
             raise
 
     db.session.commit()
@@ -656,5 +681,6 @@ def get_owned_file(user: User, file_id) -> File:
     return _get_owned_file(user, file_id)
 
 
-def get_physical_path(storage_key: str) -> str:
-    return _storage_path(storage_key)
+def get_physical_path(storage_key: str, storage_id=None) -> str:
+    """返回可直接读取的本地路径（FTP 存储点会先拉取到本地缓存）"""
+    return storage_service.read_path(storage_service.get_point(storage_id), storage_key)

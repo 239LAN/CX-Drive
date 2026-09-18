@@ -1,0 +1,24 @@
+{# 管理后台顶部标签栏：各子页面共用，按 request.endpoint 高亮 #}
+{% set ep = request.endpoint %}
+<ul class="nav nav-pills mb-3">
+    <li class="nav-item">
+        <a class="nav-link {{ 'active' if ep in ('admin.users_page', 'admin.user_detail') }}"
+           href="{{ url_for('admin.users_page') }}"><i class="bi bi-people"></i> 用户管理</a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link {{ 'active' if ep == 'admin.plans_page' }}"
+           href="{{ url_for('admin.plans_page') }}"><i class="bi bi-tags"></i> 套餐管理</a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link {{ 'active' if ep == 'admin.codes_page' }}"
+           href="{{ url_for('admin.codes_page') }}"><i class="bi bi-ticket-perforated"></i> 兑换码</a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link {{ 'active' if ep == 'admin.storage_page' }}"
+           href="{{ url_for('admin.storage_page') }}"><i class="bi bi-hdd-stack"></i> 存储点</a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link {{ 'active' if ep == 'admin.settings_page' }}"
+           href="{{ url_for('admin.settings_page') }}"><i class="bi bi-sliders"></i> 设置</a>
+    </li>
+</ul>

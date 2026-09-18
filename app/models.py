@@ -95,7 +95,8 @@ class AddonPackage(db.Model):
     name = db.Column(db.String(64), nullable=False)
     amount_bytes = db.Column(db.BigInteger, nullable=False)
     price = db.Column(db.Numeric(12, 2), nullable=False)
-    duration_days = db.Column(db.Integer, default=30, nullable=False)
+    # 有效时长（秒），默认 30 天
+    duration_seconds = db.Column(db.BigInteger, default=2592000, nullable=False)
     sort = db.Column(db.Integer, default=0, nullable=False)
 
 
@@ -156,6 +157,86 @@ class PurchaseOrder(db.Model):
     created_at = db.Column(db.DateTime, default=now_utc, nullable=False)
 
 
+class RedeemCode(db.Model):
+    """兑换码（一次性使用）"""
+    __tablename__ = "redeem_codes"
+
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    kind = db.Column(db.String(16), nullable=False)  # plan / balance / addon
+    # 会员：目标套餐 + 时长（秒级）
+    plan_id = db.Column(db.Integer, db.ForeignKey("membership_plans.id"), nullable=True)
+    duration_seconds = db.Column(db.BigInteger, nullable=True)
+    # 余额：金额
+    amount = db.Column(db.Numeric(12, 2), nullable=True)
+    # 叠加包：目标叠加包
+    package_id = db.Column(db.Integer, db.ForeignKey("addon_packages.id"), nullable=True)
+    # 兑换有效期（None = 永久有效）
+    expire_at = db.Column(db.DateTime, nullable=True)
+    used_count = db.Column(db.Integer, default=0, nullable=False)
+    used_at = db.Column(db.DateTime, nullable=True)
+    used_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    batch = db.Column(db.String(64), nullable=True, index=True)  # 生成批次号
+    note = db.Column(db.String(128), nullable=True)
+    created_at = db.Column(db.DateTime, default=now_utc, nullable=False)
+
+    plan = db.relationship("MembershipPlan", foreign_keys=[plan_id])
+    package = db.relationship("AddonPackage", foreign_keys=[package_id])
+
+    @property
+    def is_used(self) -> bool:
+        return (self.used_count or 0) > 0
+
+    def is_expired(self, ts: datetime = None) -> bool:
+        return self.expire_at is not None and self.expire_at <= (ts or now_utc())
+
+
+class RedeemRecord(db.Model):
+    """兑换记录（日志，可清空）"""
+    __tablename__ = "redeem_records"
+
+    id = db.Column(db.Integer, primary_key=True)
+    code_id = db.Column(db.Integer, db.ForeignKey("redeem_codes.id"), nullable=True)
+    code = db.Column(db.String(64), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    kind = db.Column(db.String(16), nullable=False)
+    detail = db.Column(db.String(256), nullable=True)
+    created_at = db.Column(db.DateTime, default=now_utc, nullable=False)
+
+    user = db.relationship("User", foreign_keys=[user_id])
+
+
+class StoragePoint(db.Model):
+    """存储点：本地磁盘挂载点 / FTP 服务器"""
+    __tablename__ = "storage_points"
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(64), nullable=False)
+    kind = db.Column(db.String(16), default="local", nullable=False)  # local / ftp
+    # 本地存储点：根目录绝对路径
+    path = db.Column(db.String(512), nullable=True)
+    # FTP 存储点参数
+    host = db.Column(db.String(128), nullable=True)
+    port = db.Column(db.Integer, default=21, nullable=False)
+    username = db.Column(db.String(128), nullable=True)
+    password = db.Column(db.String(256), nullable=True)
+    remote_dir = db.Column(db.String(512), nullable=True)
+    # 容量限制（字节，必填且 > 0）；占用达 90% 视为已满
+    capacity_bytes = db.Column(db.BigInteger, nullable=False)
+    # 停用 = 能读不能写
+    enabled = db.Column(db.Boolean, default=True, nullable=False)
+    sort = db.Column(db.Integer, default=0, nullable=False)
+    created_at = db.Column(db.DateTime, default=now_utc, nullable=False)
+
+    files = db.relationship("File", backref="storage_point", lazy="dynamic")
+
+    @property
+    def is_full(self) -> bool:
+        """占用率达 90% 即视为已满（见 storage_service.usage_ratio）"""
+        from app.services import storage_service
+        return storage_service.is_full(self)
+
+
 class File(db.Model):
     """文件/文件夹"""
     __tablename__ = "files"
@@ -169,10 +250,15 @@ class File(db.Model):
     mime = db.Column(db.String(128), nullable=True)
     # 物理存储名（文件实体），目录为 None
     storage_key = db.Column(db.String(64), nullable=True, index=True)
+    # 所在存储点，目录为 None
+    storage_id = db.Column(db.Integer, db.ForeignKey("storage_points.id"), nullable=True, index=True)
     md5 = db.Column(db.String(32), nullable=True, index=True)
     # 软删除（回收站）
     deleted_at = db.Column(db.DateTime, nullable=True)
     deleted_original_parent_id = db.Column(db.Integer, nullable=True)
+    # 存储点删除数据后文件实体丢失的标记（列表置灰 + 顶部横幅提示，7 天后清理记录）
+    is_lost = db.Column(db.Boolean, default=False, nullable=False)
+    lost_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=now_utc, nullable=False)
     updated_at = db.Column(db.DateTime, default=now_utc, onupdate=now_utc, nullable=False)
 
@@ -254,6 +340,7 @@ class RemoteDownload(db.Model):
     # queued / downloading / done / failed / canceled
     error = db.Column(db.String(512), nullable=True)
     storage_key = db.Column(db.String(64), nullable=True)  # 完成后生成的物理文件 key
+    storage_id = db.Column(db.Integer, db.ForeignKey("storage_points.id"), nullable=True)
     file_id = db.Column(db.Integer, db.ForeignKey("files.id"), nullable=True)
     created_at = db.Column(db.DateTime, default=now_utc, nullable=False)
     started_at = db.Column(db.DateTime, nullable=True)
