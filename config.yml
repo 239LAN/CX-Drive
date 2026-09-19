@@ -1,0 +1,63 @@
+# ============================================================
+# RealFiles 站点配置
+#
+# 说明：
+#   - 「项目名」指开源项目本身（project.*），是固定标识，一般无需修改；
+#     它只出现在法律条款、开源许可等指向项目本身的文案中。
+#   - 「网站名」（site.name）由部署者自定义，决定导航栏、浏览器标题、
+#     首页大标题等位置的显示文字；留空则回退为项目名。
+#   - 修改后重启服务生效：systemctl restart realfiles
+#   - 覆盖更新时本文件会被保留，不会被源码覆盖。
+# ============================================================
+
+# ---- 项目信息（固定标识） ----
+project:
+  name: RealFiles
+  name_en: RealFiles
+
+# ---- 网站信息（部署者自定义） ----
+site:
+  # 网站名
+  name: RealFiles
+
+# ---- 功能开关（true 开启 / false 关闭） ----
+features:
+  allow_register: true   # 开放注册；关闭后仅管理员可创建账号
+  enable_preview: true   # 在线预览（仅 VIP/SVIP）
+  enable_share: true     # 分享外链
+  enable_remote: true    # 远程下载
+
+# ---- HTTPS 与 HSTS ----
+# 说明：
+#   - enabled 打开后会校验证书与私钥是否存在，缺失则自动关闭 HTTPS（服务照常以 HTTP 启动）；
+#   - HSTS 仅在 HTTPS 真正生效时下发，HTTPS 未开启时自动忽略 hsts 设置；
+#   - 证书路径支持绝对路径，或以项目根目录为基准的相对路径。
+https:
+  enabled: false
+  # 证书（链）与私钥，例如 Let's Encrypt：
+  #   /etc/letsencrypt/live/example.com/fullchain.pem
+  #   /etc/letsencrypt/live/example.com/privkey.pem
+  certfile: ""
+  keyfile: ""
+  hsts: true               # 下发 Strict-Transport-Security 响应头
+  hsts_max_age: 31536000   # HSTS 有效期（秒），默认 1 年
+
+# ---- 自动更新 ----
+# 说明：
+#   - 每天定时（hour/minute，服务器本地时间）请求 GitHub Releases API 比对版本；
+#     发现新版本时下载发布脚本（RealFiles-release-<版本>-install.sh），校验 sha256 后
+#     以 root 执行覆盖更新；
+#   - 管理员登录时也会检查一次（check_on_login），只提示不安装；
+#     管理后台「设置」页可随时手动检查 / 立即更新；
+#   - 覆盖更新会保留 instance/（数据库）、storage/ uploads/（用户数据）、
+#     .env（密钥）与 config.yml（本文件）；
+#   - enabled 改为 false 时不再自动安装，但仍会定时检查，并在页脚提示有新版本；
+#   - proxy 为公共 GitHub 代理，仅在直连 github.com / api.github.com 失败时
+#     才回退使用（例如国内服务器无法访问 GitHub）；留空表示不使用代理。
+update:
+  enabled: true                          # true 自动安装 / false 仅检查并提示
+  check_on_login: true                   # 管理员登录时顺带检查一次更新
+  hour: 0                                # 每日自动检查/安装时间（服务器本地时间）
+  minute: 0
+  repo: 239LAN/RealFiles                  # 更新来源（GitHub 仓库 owner/name）
+  proxy: https://v4.gh-proxy.org/        # 直连失败时的回退代理，留空则禁用
