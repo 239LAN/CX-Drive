@@ -34,13 +34,20 @@
                     <td>
                         {% if p.kind == 'local' %}
                         <span class="badge bg-secondary">本地磁盘</span>
-                        {% else %}
+                        {% elif p.kind == 'ftp' %}
                         <span class="badge bg-info text-dark">FTP</span>
+                        {% elif p.kind == 'sftp' %}
+                        <span class="badge bg-primary">SFTP</span>
+                        {% else %}
+                        <span class="badge bg-dark">S3</span>
                         {% endif %}
                     </td>
                     <td class="small text-break">
                         {% if p.kind == 'local' %}
                         <code>{{ p.path }}</code>
+                        {% elif p.kind == 's3' %}
+                        <code>s3://{{ p.bucket }}{% if p.remote_dir %}/{{ p.remote_dir }}{% endif %}</code>
+                        {% if p.endpoint %}<div class="text-muted">{{ p.endpoint }}</div>{% endif %}
                         {% else %}
                         <code>{{ p.username or 'anonymous' }}@{{ p.host }}:{{ p.port }}{{ p.remote_dir }}</code>
                         {% endif %}
@@ -73,7 +80,10 @@
                                 data-sort="{{ p.sort }}" data-enabled="{{ 1 if p.enabled else 0 }}"
                                 data-path="{{ p.path or '' }}" data-host="{{ p.host or '' }}"
                                 data-port="{{ p.port or 21 }}" data-username="{{ p.username or '' }}"
-                                data-remotedir="{{ p.remote_dir or '' }}">编辑</button>
+                                data-remotedir="{{ p.remote_dir or '' }}"
+                                data-endpoint="{{ p.endpoint or '' }}" data-bucket="{{ p.bucket or '' }}"
+                                data-accesskey="{{ p.access_key or '' }}" data-region="{{ p.region or '' }}"
+                                data-pathstyle="{{ 1 if p.path_style else 0 }}">编辑</button>
                         <form method="post" action="{{ url_for('admin.storage_test') }}" class="d-inline">
                             <input type="hidden" name="point_id" value="{{ p.id }}">
                             <button class="btn btn-sm btn-outline-secondary" title="测试连接">测试</button>
@@ -109,6 +119,8 @@
                     <select name="kind" id="p_kind" class="form-select" onchange="togglePointKind()">
                         <option value="local">本地磁盘</option>
                         <option value="ftp">FTP</option>
+                        <option value="sftp">SFTP</option>
+                        <option value="s3">S3（兼容 MinIO / OSS）</option>
                     </select></div>
                 <div class="col-md-4"><label class="form-label">容量（GB，必填且大于 0）</label>
                     <input type="number" step="0.01" min="0.01" name="capacity_gb" id="p_capacity"
@@ -121,17 +133,40 @@
                     <div class="form-text">默认数据目录：<code>{{ default_root }}</code>；目录需已存在且可写。</div>
                 </div>
 
-                <div class="col-md-6 p-kind-ftp d-none"><label class="form-label">FTP 服务器</label>
+                <div class="col-md-6 p-kind-remote d-none"><label class="form-label">服务器地址</label>
                     <input type="text" name="host" id="p_host" class="form-control" placeholder="如 192.168.1.10"></div>
-                <div class="col-md-3 p-kind-ftp d-none"><label class="form-label">端口</label>
+                <div class="col-md-3 p-kind-remote d-none"><label class="form-label">端口</label>
                     <input type="number" name="port" id="p_port" class="form-control" value="21"></div>
-                <div class="col-md-3 p-kind-ftp d-none"><label class="form-label">用户名</label>
-                    <input type="text" name="username" id="p_username" class="form-control" placeholder="留空为 anonymous"></div>
-                <div class="col-md-6 p-kind-ftp d-none"><label class="form-label">密码</label>
+                <div class="col-md-3 p-kind-remote d-none"><label class="form-label">用户名</label>
+                    <input type="text" name="username" id="p_username" class="form-control"
+                           placeholder="FTP 可留空为 anonymous"></div>
+                <div class="col-md-6 p-kind-remote d-none"><label class="form-label">密码</label>
                     <input type="password" name="password" id="p_password" class="form-control"
                            placeholder="留空表示不修改" autocomplete="new-password"></div>
-                <div class="col-md-6 p-kind-ftp d-none"><label class="form-label">远端目录</label>
+                <div class="col-md-6 p-kind-remote d-none"><label class="form-label">远端目录</label>
                     <input type="text" name="remote_dir" id="p_remote_dir" class="form-control" placeholder="/realfiles"></div>
+
+                <div class="col-md-6 p-kind-s3 d-none"><label class="form-label">Endpoint</label>
+                    <input type="text" name="endpoint" id="p_endpoint" class="form-control"
+                           placeholder="如 http://minio.local:9000">
+                    <div class="form-text">留空则使用 AWS 默认地址；MinIO / OSS 等需填写自定义 Endpoint。</div></div>
+                <div class="col-md-3 p-kind-s3 d-none"><label class="form-label">Region</label>
+                    <input type="text" name="region" id="p_region" class="form-control" placeholder="如 us-east-1"></div>
+                <div class="col-md-3 p-kind-s3 d-none"><label class="form-label">Bucket</label>
+                    <input type="text" name="bucket" id="p_bucket" class="form-control" placeholder="如 realfiles"></div>
+                <div class="col-md-6 p-kind-s3 d-none"><label class="form-label">AccessKey</label>
+                    <input type="text" name="access_key" id="p_access_key" class="form-control"
+                           autocomplete="off"></div>
+                <div class="col-md-6 p-kind-s3 d-none"><label class="form-label">SecretKey</label>
+                    <input type="password" name="secret_key" id="p_secret_key" class="form-control"
+                           placeholder="留空表示不修改" autocomplete="new-password"></div>
+                <div class="col-md-6 p-kind-s3 d-none"><label class="form-label">前缀目录（可留空）</label>
+                    <input type="text" name="remote_dir" id="p_remote_dir_s3" class="form-control"
+                           placeholder="如 realfiles"></div>
+                <div class="col-md-6 p-kind-s3 d-none d-flex align-items-end">
+                    <div class="form-check"><input type="checkbox" name="path_style" class="form-check-input" id="p_path_style">
+                        <label class="form-check-label" for="p_path_style">路径寻址（Path Style，MinIO 等通常需要）</label></div>
+                </div>
 
                 <div class="col-md-4"><label class="form-label">排序（小在前）</label>
                     <input type="number" name="sort" id="p_sort" class="form-control" value="0"></div>
@@ -166,10 +201,21 @@
 <script>
 function togglePointKind() {
     const kind = document.getElementById('p_kind').value;
-    document.querySelectorAll('.p-kind-local').forEach(
-        el => el.classList.toggle('d-none', kind !== 'local'));
-    document.querySelectorAll('.p-kind-ftp').forEach(
-        el => el.classList.toggle('d-none', kind !== 'ftp'));
+    // 隐藏的字段组一并禁用，避免同名 remote_dir 等字段重复提交
+    const show = (sel, on) => {
+        document.querySelectorAll(sel).forEach(el => {
+            el.classList.toggle('d-none', !on);
+            el.querySelectorAll('input, select, textarea').forEach(
+                inp => { inp.disabled = !on; });
+        });
+    };
+    show('.p-kind-local', kind === 'local');
+    show('.p-kind-remote', kind === 'ftp' || kind === 'sftp');
+    show('.p-kind-s3', kind === 's3');
+
+    const port = document.getElementById('p_port');
+    if (kind === 'ftp' && (!port.value || port.value === '22')) port.value = '21';
+    if (kind === 'sftp' && (!port.value || port.value === '21')) port.value = '22';
 }
 
 function openPointEdit(el) {
@@ -185,6 +231,13 @@ function openPointEdit(el) {
         f('p_username').value = '';
         f('p_password').value = '';
         f('p_remote_dir').value = '';
+        f('p_endpoint').value = '';
+        f('p_region').value = '';
+        f('p_bucket').value = '';
+        f('p_access_key').value = '';
+        f('p_secret_key').value = '';
+        f('p_remote_dir_s3').value = '';
+        f('p_path_style').checked = false;
         f('p_sort').value = '0';
         f('p_enabled').checked = true;
         togglePointKind();
@@ -201,6 +254,13 @@ function openPointEdit(el) {
     f('p_username').value = d.username;
     f('p_password').value = '';
     f('p_remote_dir').value = d.remotedir;
+    f('p_endpoint').value = d.endpoint;
+    f('p_region').value = d.region;
+    f('p_bucket').value = d.bucket;
+    f('p_access_key').value = d.accesskey;
+    f('p_secret_key').value = '';
+    f('p_remote_dir_s3').value = d.remotedir;
+    f('p_path_style').checked = d.pathstyle === '1';
     f('p_sort').value = d.sort;
     f('p_enabled').checked = d.enabled === '1';
     togglePointKind();

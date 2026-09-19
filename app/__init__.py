@@ -151,6 +151,25 @@ def _migrate_storage_points():
     inspector = inspect(db.engine)
     tables = set(inspector.get_table_names())
 
+    if "storage_points" in tables:
+        # 1.3.1 起存储点支持 SFTP / S3，需补齐 S3 相关列
+        columns = {c["name"] for c in inspector.get_columns("storage_points")}
+        stmts = []
+        for name, ddl in (
+            ("endpoint", "VARCHAR(256)"),
+            ("bucket", "VARCHAR(128)"),
+            ("access_key", "VARCHAR(256)"),
+            ("secret_key", "VARCHAR(256)"),
+            ("region", "VARCHAR(64)"),
+            ("path_style", "BOOLEAN NOT NULL DEFAULT 0"),
+        ):
+            if name not in columns:
+                stmts.append(f"ALTER TABLE storage_points ADD COLUMN {name} {ddl}")
+        if stmts:
+            with db.engine.begin() as conn:
+                for sql in stmts:
+                    conn.execute(text(sql))
+
     if "files" in tables:
         columns = {c["name"] for c in inspector.get_columns("files")}
         stmts = []

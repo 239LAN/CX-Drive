@@ -4,6 +4,26 @@
 发布新版本时先改 `VERSION`，再执行 `python build_install.py`，把生成的
 `dist/RealFiles-release-<版本>-install.sh` 作为 GitHub Release 附件上传（自动更新只识别该命名）。
 
+## 1.3.1
+
+### 新增
+
+- 存储点新增 SFTP 与 S3（对象存储）协议支持：SFTP 使用主机 / 端口 / 用户名 / 密码 / 远端目录；
+  S3 支持自定义 Endpoint（兼容 MinIO、OSS 等）、Region、Bucket、AccessKey / SecretKey、
+  前缀目录与「路径寻址（Path Style）」开关，远端文件读取同样先拉取到本地缓存再响应
+- 「获取直链」功能（仅 SVIP）：在文件列表一键生成可公开访问的下载直链，也可在
+  「我的分享」页统一管理，支持设置有效期（留空为永久）、随时撤销
+- 直链限额：单条直链每周最多下载 5GB（按 ISO 自然周重置，超限后该周不可再下载）；
+  每个 SVIP 用户每周最多生成 10 条直链（撤销不返还额度）
+
+### 变更
+
+- 未登录访客的默认下载限速由 1MB/s 调整为 10MB/s
+- 安装脚本模板（原 `install-template.sh`）改为内嵌在 `build_install.py` 中，
+  仓库不再保留独立模板文件；安装方式仅保留单文件安装包一种
+- 数据库新增 `direct_links` / `direct_link_quotas` 表；`storage_points` 表补齐 S3 相关字段
+- 新增依赖 `paramiko`（SFTP）与 `boto3`（S3）
+
 ## 1.3.0
 
 ### 新增

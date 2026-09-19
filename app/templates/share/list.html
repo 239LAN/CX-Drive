@@ -37,4 +37,49 @@
         </table>
     </div>
 </div>
+
+<h5 class="mt-4 mb-2"><i class="bi bi-link-45deg"></i> 直链 <span class="badge bg-primary">SVIP</span></h5>
+<div class="alert alert-info py-2 small">
+    <i class="bi bi-info-circle"></i>
+    直链无需登录即可直接下载：单条直链每周最多下载 <strong>5GB</strong>；
+    每个 SVIP 用户每周最多生成 <strong>{{ direct_create_limit }}</strong> 条直链。
+    本周已生成 <strong>{{ direct_created }}</strong> / {{ direct_create_limit }} 条。
+</div>
+<div class="card">
+    <div class="card-body p-0">
+        <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light"><tr><th>文件</th><th>直链</th><th>下载次数</th><th>本周流量</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody>
+                {% for r in direct_rows %}
+                {% set link = r.link %}
+                <tr>
+                    <td>{% if link.file %}{{ link.file.name }}{% else %}<span class="text-muted">文件已删除</span>{% endif %}</td>
+                    <td>
+                        <div class="input-group input-group-sm">
+                            <input type="text" class="form-control" value="{{ url_for('share.direct_download', token=link.token, _external=True) }}" readonly>
+                            <button class="btn btn-outline-secondary" onclick="navigator.clipboard.writeText(this.previousElementSibling.value)">复制</button>
+                        </div>
+                    </td>
+                    <td>{{ link.download_count }}</td>
+                    <td>{{ r.week_used|human_size }} / {{ direct_week_limit|human_size }}</td>
+                    <td>
+                        {% if link.expire_at and link.expire_at < now %}<span class="badge bg-secondary">已过期</span>
+                        {% elif r.week_used >= direct_week_limit %}<span class="badge bg-warning text-dark">本周额度已用尽</span>
+                        {% else %}<span class="badge bg-success">有效</span>{% endif %}
+                    </td>
+                    <td>
+                        <form method="post" action="{{ url_for('share.direct_revoke', link_id=link.id) }}" data-confirm="撤销该直链？">
+                            <button class="btn btn-sm btn-outline-danger">撤销</button>
+                        </form>
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6" class="text-center text-muted py-5">
+                    {% if is_svip %}暂无直链，可在「我的文件」中点击 <i class="bi bi-link-45deg"></i> 获取直链{% else %}获取直链为 SVIP 专享功能，升级后可生成{% endif %}
+                </td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
 {% endblock %}

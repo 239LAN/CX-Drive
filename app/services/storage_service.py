@@ -1,8 +1,12 @@
-"""存储点管理：容量统计、均衡分配、本地磁盘 / FTP 后端读写
+"""存储点管理：容量统计、均衡分配、本地磁盘 / FTP / SFTP / S3 后端读写
 
 存储点（StoragePoint）是文件实体的物理落点：
 - local：本机磁盘目录（可多挂载点）
 - ftp：远端 FTP 服务器目录
+- sftp：远端 SFTP（SSH）服务器目录
+- s3：S3 兼容对象存储（MinIO / OSS 等，支持自定义 Endpoint）
+
+远端存储点（ftp/sftp/s3）读取时先拉取到本地缓存再响应，缓存由后台任务按 TTL 清理。
 
 容量规则：每个存储点必填容量上限，可用空间按容量的 90% 计（占用达 90% 即视为已满）。
 写入时在「空间足够的可用存储点」中选择占用率最低者，使各点占用率趋于平均。
@@ -26,6 +30,10 @@ FULL_RATIO = 0.9
 FTP_TIMEOUT = 30
 # FTP 相关异常合集：ftplib.all_errors 本身已是元组，不能再嵌进 except 的元组里
 FTP_ERRORS = tuple(ftplib.all_errors) + (OSError,)
+# SFTP 连接超时（秒）
+SFTP_TIMEOUT = 30
+# 支持的存储点类型（管理页表单与校验共用）
+STORAGE_KINDS = ("local", "ftp", "sftp", "s3")
 # 本地容量探测失败时的兜底值
 FALLBACK_CAPACITY = 10 * 1024 ** 3
 # 最小容量限制（1MB），避免误填导致无法写入
@@ -292,25 +300,301 @@ def _ftp_delete(point, storage_key: str):
         _ftp_close(conn)
 
 
+# ---------------- SFTP 后端 ----------------
+
+def _sftp_connect(point):
+    """建立 SFTP 连接（paramiko，默认 22 端口，用户名 / 密码认证）"""
+    try:
+        import paramiko
+    except ImportError as e:  # 依赖缺失时给出可读提示
+        raise StorageError("未安装 paramiko，无法使用 SFTP 存储点") from e
+    if not (point.host or "").strip():
+        raise StorageError("请填写 SFTP 服务器地址")
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(
+            hostname=(point.host or "").strip(),
+            port=int(point.port or 22),
+            username=(point.username or "").strip() or None,
+            password=point.password or None,
+            timeout=SFTP_TIMEOUT,
+            banner_timeout=SFTP_TIMEOUT,
+            auth_timeout=SFTP_TIMEOUT,
+            look_for_keys=False,
+            allow_agent=False,
+        )
+        return client
+    except Exception as e:  # noqa: BLE001 —— paramiko 异常类型繁多，统一包装
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001
+            pass
+        raise StorageError(f"SFTP 连接失败：{e}")
+
+
+def _sftp_close(client):
+    try:
+        client.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _sftp_dir(point, storage_key: str) -> str:
+    base = (point.remote_dir or "/").rstrip("/")
+    return f"{base}/{storage_key[:2]}"
+
+
+def _sftp_path(point, storage_key: str) -> str:
+    return f"{_sftp_dir(point, storage_key)}/{storage_key}"
+
+
+def _sftp_makedirs(sftp, dirpath: str):
+    """逐级创建远端目录（已存在则忽略）"""
+    if not dirpath:
+        return
+    absolute = dirpath.startswith("/")
+    cur = "/" if absolute else ""
+    for part in [p for p in dirpath.split("/") if p]:
+        cur = f"{cur.rstrip('/')}/{part}" if cur else part
+        if absolute and not cur.startswith("/"):
+            cur = "/" + cur
+        try:
+            sftp.stat(cur)
+        except OSError:
+            try:
+                sftp.mkdir(cur)
+            except OSError:
+                pass
+
+
+def _sftp_fetch(point, storage_key: str) -> str:
+    """把 SFTP 上的文件拉取到本地缓存并返回缓存路径"""
+    cached = _cache_path(point, storage_key)
+    if os.path.exists(cached):
+        return cached
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(cached), suffix=".part")
+    os.close(fd)
+    client = _sftp_connect(point)
+    try:
+        sftp = client.open_sftp()
+        try:
+            sftp.get(_sftp_path(point, storage_key), tmp)
+        finally:
+            sftp.close()
+        os.replace(tmp, cached)
+        return cached
+    except Exception as e:  # noqa: BLE001
+        _remove_quietly(tmp)
+        raise StorageError(f"SFTP 读取失败：{e}")
+    finally:
+        _sftp_close(client)
+
+
+def _sftp_head(point, storage_key: str, length: int) -> bytes:
+    """只取远端文件头部若干字节，避免整文件拉取"""
+    client = _sftp_connect(point)
+    try:
+        sftp = client.open_sftp()
+        try:
+            with sftp.open(_sftp_path(point, storage_key), "rb") as remote:
+                return remote.read(length)
+        finally:
+            sftp.close()
+    except Exception as e:  # noqa: BLE001
+        raise StorageError(f"SFTP 读取失败：{e}")
+    finally:
+        _sftp_close(client)
+
+
+def _sftp_store(point, storage_key: str, stream):
+    client = _sftp_connect(point)
+    try:
+        sftp = client.open_sftp()
+        try:
+            _sftp_makedirs(sftp, _sftp_dir(point, storage_key))
+            if hasattr(stream, "seek"):
+                stream.seek(0)
+            with sftp.open(_sftp_path(point, storage_key), "wb") as remote:
+                shutil.copyfileobj(stream, remote)
+        finally:
+            sftp.close()
+    except Exception as e:  # noqa: BLE001
+        raise StorageError(f"SFTP 写入失败：{e}")
+    finally:
+        _sftp_close(client)
+
+
+def _sftp_delete(point, storage_key: str):
+    client = _sftp_connect(point)
+    try:
+        sftp = client.open_sftp()
+        try:
+            sftp.remove(_sftp_path(point, storage_key))
+        except OSError as e:
+            # 文件不存在视为删除成功
+            if getattr(e, "errno", None) != 2 and "No such file" not in str(e):
+                raise StorageError(f"SFTP 删除失败：{e}")
+        finally:
+            sftp.close()
+    finally:
+        _sftp_close(client)
+
+
+def _sftp_exists(point, storage_key: str) -> bool:
+    client = _sftp_connect(point)
+    try:
+        sftp = client.open_sftp()
+        try:
+            sftp.stat(_sftp_path(point, storage_key))
+            return True
+        except OSError:
+            return False
+        finally:
+            sftp.close()
+    finally:
+        _sftp_close(client)
+
+
+# ---------------- S3 后端（兼容 MinIO / OSS 等） ----------------
+
+def _s3_client(point):
+    """构建 S3 客户端；endpoint 留空则使用 AWS 默认地址"""
+    try:
+        import boto3
+        from botocore.config import Config as BotoConfig
+    except ImportError as e:
+        raise StorageError("未安装 boto3，无法使用 S3 存储点") from e
+    cfg = BotoConfig(
+        signature_version="s3v4",
+        retries={"max_attempts": 3},
+        s3={"addressing_style": "path" if point.path_style else "auto"},
+    )
+    try:
+        return boto3.client(
+            "s3",
+            endpoint_url=(point.endpoint or "").strip() or None,
+            aws_access_key_id=(point.access_key or "").strip() or None,
+            aws_secret_access_key=(point.secret_key or "").strip() or None,
+            region_name=(point.region or "").strip() or None,
+            config=cfg,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise StorageError(f"S3 客户端初始化失败：{e}")
+
+
+def _s3_bucket(point) -> str:
+    bucket = (point.bucket or "").strip()
+    if not bucket:
+        raise StorageError("请填写 S3 Bucket")
+    return bucket
+
+
+def _s3_key(point, storage_key: str) -> str:
+    """对象键：<remote_dir 作为前缀>/<分片目录>/<storage_key>"""
+    prefix = (point.remote_dir or "").strip().strip("/")
+    sub = storage_key[:2]
+    return f"{prefix}/{sub}/{storage_key}" if prefix else f"{sub}/{storage_key}"
+
+
+def _s3_fetch(point, storage_key: str) -> str:
+    """把 S3 对象下载到本地缓存并返回缓存路径"""
+    cached = _cache_path(point, storage_key)
+    if os.path.exists(cached):
+        return cached
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(cached), suffix=".part")
+    os.close(fd)
+    try:
+        client = _s3_client(point)
+        client.download_file(_s3_bucket(point), _s3_key(point, storage_key), tmp)
+        os.replace(tmp, cached)
+        return cached
+    except StorageError:
+        _remove_quietly(tmp)
+        raise
+    except Exception as e:  # noqa: BLE001
+        _remove_quietly(tmp)
+        raise StorageError(f"S3 读取失败：{e}")
+
+
+def _s3_head(point, storage_key: str, length: int) -> bytes:
+    """用 Range 请求只取对象头部若干字节"""
+    try:
+        client = _s3_client(point)
+        resp = client.get_object(
+            Bucket=_s3_bucket(point),
+            Key=_s3_key(point, storage_key),
+            Range=f"bytes=0-{max(int(length) - 1, 0)}",
+        )
+        body = resp["Body"]
+        try:
+            return body.read()
+        finally:
+            body.close()
+    except StorageError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise StorageError(f"S3 读取失败：{e}")
+
+
+def _s3_store(point, storage_key: str, stream):
+    try:
+        client = _s3_client(point)
+        if hasattr(stream, "seek"):
+            stream.seek(0)
+        client.upload_fileobj(stream, _s3_bucket(point), _s3_key(point, storage_key))
+    except StorageError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise StorageError(f"S3 写入失败：{e}")
+
+
+def _s3_delete(point, storage_key: str):
+    try:
+        _s3_client(point).delete_object(
+            Bucket=_s3_bucket(point), Key=_s3_key(point, storage_key))
+    except StorageError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise StorageError(f"S3 删除失败：{e}")
+
+
+def _s3_exists(point, storage_key: str) -> bool:
+    try:
+        client = _s3_client(point)
+        client.head_object(Bucket=_s3_bucket(point), Key=_s3_key(point, storage_key))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 # ---------------- 统一读写接口 ----------------
 
 def read_path(point, storage_key: str) -> str:
-    """返回可直接读取的本地路径；FTP 存储点会先拉取到本地缓存"""
+    """返回可直接读取的本地路径；远端存储点会先拉取到本地缓存"""
     point = get_point(point.id if point is not None else None)
     if point is None:
         raise StorageError("尚未配置存储点")
     if point.kind == "local":
         return _local_path(point, storage_key)
+    if point.kind == "sftp":
+        return _sftp_fetch(point, storage_key)
+    if point.kind == "s3":
+        return _s3_fetch(point, storage_key)
     return _ftp_fetch(point, storage_key)
 
 
 def read_head(point, storage_key: str, length: int) -> bytes:
-    """读取文件头部若干字节（FTP 只取所需部分，避免整文件拉取）"""
+    """读取文件头部若干字节（远端只取所需部分，避免整文件拉取）"""
     point = get_point(point.id if point is not None else None)
     if point is None:
         raise StorageError("尚未配置存储点")
     if point.kind == "local":
         return read_file_head(_local_path(point, storage_key), length)
+    if point.kind == "sftp":
+        return _sftp_head(point, storage_key, length)
+    if point.kind == "s3":
+        return _s3_head(point, storage_key, length)
     conn = _ftp_connect(point)
     try:
         sock = conn.transfercmd("RETR " + _ftp_path(point, storage_key))
@@ -341,6 +625,12 @@ def write_stream(point, storage_key: str, stream):
         with open(dest, "wb") as out:
             shutil.copyfileobj(stream, out)
         return
+    if point.kind == "sftp":
+        _sftp_store(point, storage_key, stream)
+        return
+    if point.kind == "s3":
+        _s3_store(point, storage_key, stream)
+        return
     _ftp_store(point, storage_key, stream)
 
 
@@ -356,7 +646,7 @@ def write_from_path(point, storage_key: str, src_path: str, move: bool = True):
             shutil.copy2(src_path, dest)
         return
     with open(src_path, "rb") as fh:
-        _ftp_store(point, storage_key, fh)
+        write_stream(point, storage_key, fh)
     if move:
         _remove_quietly(src_path)
 
@@ -368,6 +658,10 @@ def delete_object(point, storage_key: str, drop_cache: bool = True):
         return
     if point.kind == "local":
         _remove_quietly(_local_path(point, storage_key))
+    elif point.kind == "sftp":
+        _sftp_delete(point, storage_key)
+    elif point.kind == "s3":
+        _s3_delete(point, storage_key)
     else:
         _ftp_delete(point, storage_key)
     if drop_cache:
@@ -389,6 +683,10 @@ def object_exists(point, storage_key: str) -> bool:
             return False
         if point.kind == "local":
             return os.path.exists(_local_path(point, storage_key))
+        if point.kind == "sftp":
+            return _sftp_exists(point, storage_key)
+        if point.kind == "s3":
+            return _s3_exists(point, storage_key)
         conn = _ftp_connect(point)
         try:
             conn.size(_ftp_path(point, storage_key))
@@ -509,6 +807,36 @@ def test_connection(point) -> str:
         if not os.access(path, os.W_OK):
             return "目录不可写"
         return ""
+    if point.kind == "sftp":
+        if not (point.host or "").strip():
+            return "请填写 SFTP 服务器地址"
+        try:
+            client = _sftp_connect(point)
+        except StorageError as e:
+            return str(e)
+        try:
+            sftp = client.open_sftp()
+            try:
+                _sftp_makedirs(sftp, (point.remote_dir or "/").rstrip("/") or "/")
+            finally:
+                sftp.close()
+            return ""
+        except Exception as e:  # noqa: BLE001
+            return f"SFTP 目录不可用：{e}"
+        finally:
+            _sftp_close(client)
+    if point.kind == "s3":
+        try:
+            client = _s3_client(point)
+        except StorageError as e:
+            return str(e)
+        try:
+            client.head_bucket(Bucket=_s3_bucket(point))
+            return ""
+        except StorageError as e:
+            return str(e)
+        except Exception as e:  # noqa: BLE001
+            return f"S3 连接失败：{e}"
     if not (point.host or "").strip():
         return "请填写 FTP 服务器地址"
     try:
@@ -525,7 +853,7 @@ def test_connection(point) -> str:
 
 
 def clean_cache(ttl: int = None) -> int:
-    """清理超过 TTL 的 FTP 本地缓存，返回删除文件数"""
+    """清理超过 TTL 的远端存储点本地缓存，返回删除文件数"""
     root = current_app.config["STORAGE_CACHE_ROOT"]
     if not root or not os.path.isdir(root):
         return 0

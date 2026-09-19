@@ -9,3 +9,7 @@ APScheduler==3.10.4
 python-dotenv==1.0.1
 PyYAML==6.0.3
 gunicorn==21.2.0
+# SFTP 存储点
+paramiko==3.5.1
+# S3（兼容 MinIO / OSS 等）存储点
+boto3==1.35.36

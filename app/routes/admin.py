@@ -450,7 +450,7 @@ def codes_records_clear():
 def _apply_point_form(point, is_new: bool):
     """把表单内容写入存储点对象并校验；失败抛 ValueError"""
     kind = (request.form.get("kind") or "local").strip()
-    if kind not in ("local", "ftp"):
+    if kind not in storage_service.STORAGE_KINDS:
         raise ValueError("存储类型不支持")
     name = (request.form.get("name") or "").strip()
     if not name:
@@ -481,17 +481,36 @@ def _apply_point_form(point, is_new: bool):
         if not path:
             raise ValueError("请填写本地存储目录")
         point.path = path
+        _clear_point_remote(point)
+        return
+
+    if kind == "s3":
+        # 对象存储：自定义 Endpoint 以兼容 MinIO / OSS 等；remote_dir 作为对象键前缀
+        bucket = (request.form.get("bucket") or "").strip()
+        if not bucket:
+            raise ValueError("请填写 S3 Bucket")
+        secret = request.form.get("secret_key") or ""
+        if not secret and not is_new:
+            secret = point.secret_key or ""  # 留空表示沿用原密钥
+        point.path = None
         point.host = None
+        point.port = 21
         point.username = None
         point.password = None
-        point.remote_dir = None
+        point.endpoint = (request.form.get("endpoint") or "").strip() or None
+        point.bucket = bucket
+        point.access_key = (request.form.get("access_key") or "").strip() or None
+        point.secret_key = secret or None
+        point.region = (request.form.get("region") or "").strip() or None
+        point.path_style = bool(request.form.get("path_style"))
+        point.remote_dir = (request.form.get("remote_dir") or "").strip().strip("/") or None
         return
 
     host = (request.form.get("host") or "").strip()
     if not host:
-        raise ValueError("请填写 FTP 服务器地址")
+        raise ValueError("请填写 SFTP 服务器地址" if kind == "sftp" else "请填写 FTP 服务器地址")
     try:
-        port = int(request.form.get("port") or 21)
+        port = int(request.form.get("port") or (22 if kind == "sftp" else 21))
     except ValueError:
         raise ValueError("端口格式不正确")
     if not 1 <= port <= 65535:
@@ -505,6 +524,27 @@ def _apply_point_form(point, is_new: bool):
     point.username = (request.form.get("username") or "").strip()
     point.password = password
     point.remote_dir = (request.form.get("remote_dir") or "").strip() or "/"
+    point.endpoint = None
+    point.bucket = None
+    point.access_key = None
+    point.secret_key = None
+    point.region = None
+    point.path_style = False
+
+
+def _clear_point_remote(point):
+    """清空非本地存储点的远端连接字段（本地存储点只需保留 path）"""
+    point.port = 21
+    point.host = None
+    point.username = None
+    point.password = None
+    point.remote_dir = None
+    point.endpoint = None
+    point.bucket = None
+    point.access_key = None
+    point.secret_key = None
+    point.region = None
+    point.path_style = False
 
 
 @admin_bp.route("/storage")
@@ -552,6 +592,7 @@ def storage_test():
             if saved is None:
                 abort(404)
             point.password = saved.password  # 供表单密码留空时沿用
+            point.secret_key = saved.secret_key  # S3 密钥同理
         _apply_point_form(point, is_new=not point_id)
         err = storage_service.test_connection(point)
     except ValueError as e:

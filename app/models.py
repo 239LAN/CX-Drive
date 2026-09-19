@@ -207,20 +207,27 @@ class RedeemRecord(db.Model):
 
 
 class StoragePoint(db.Model):
-    """存储点：本地磁盘挂载点 / FTP 服务器"""
+    """存储点：本地磁盘挂载点 / FTP / SFTP / S3（兼容 MinIO、OSS 等自定义 Endpoint）"""
     __tablename__ = "storage_points"
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(64), nullable=False)
-    kind = db.Column(db.String(16), default="local", nullable=False)  # local / ftp
+    kind = db.Column(db.String(16), default="local", nullable=False)  # local / ftp / sftp / s3
     # 本地存储点：根目录绝对路径
     path = db.Column(db.String(512), nullable=True)
-    # FTP 存储点参数
+    # FTP / SFTP 存储点参数
     host = db.Column(db.String(128), nullable=True)
     port = db.Column(db.Integer, default=21, nullable=False)
     username = db.Column(db.String(128), nullable=True)
     password = db.Column(db.String(256), nullable=True)
     remote_dir = db.Column(db.String(512), nullable=True)
+    # S3 存储点参数（prefix 复用 remote_dir，故此处不再单列）
+    endpoint = db.Column(db.String(256), nullable=True)
+    bucket = db.Column(db.String(128), nullable=True)
+    access_key = db.Column(db.String(256), nullable=True)
+    secret_key = db.Column(db.String(256), nullable=True)
+    region = db.Column(db.String(64), nullable=True)
+    path_style = db.Column(db.Boolean, default=False, nullable=False)  # True = 路径寻址
     # 容量限制（字节，必填且 > 0）；占用达 90% 视为已满
     capacity_bytes = db.Column(db.BigInteger, nullable=False)
     # 停用 = 能读不能写
@@ -280,6 +287,40 @@ class ShareLink(db.Model):
     created_at = db.Column(db.DateTime, default=now_utc, nullable=False)
 
     file = db.relationship("File", foreign_keys=[file_id])
+
+
+class DirectLink(db.Model):
+    """SVIP 直链：可直接 GET 下载的外链
+
+    限额：单条直链每周最多下载 5GB（week_bytes 按 ISO 自然周重置）；
+    每个 SVIP 用户每周最多生成 10 条（计数见 DirectLinkQuota，撤销不返还额度）。
+    """
+    __tablename__ = "direct_links"
+
+    id = db.Column(db.Integer, primary_key=True)
+    token = db.Column(db.String(64), unique=True, default=gen_uuid, nullable=False, index=True)
+    file_id = db.Column(db.Integer, db.ForeignKey("files.id"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    expire_at = db.Column(db.DateTime, nullable=True)  # None = 永久有效
+    download_count = db.Column(db.Integer, default=0, nullable=False)
+    # 当前统计周（ISO 周键）与该周已用下载字节，跨周自动归零
+    week_key = db.Column(db.String(8), nullable=True)
+    week_bytes = db.Column(db.BigInteger, default=0, nullable=False)
+    created_at = db.Column(db.DateTime, default=now_utc, nullable=False)
+
+    file = db.relationship("File", foreign_keys=[file_id])
+
+
+class DirectLinkQuota(db.Model):
+    """SVIP 用户每周直链生成计数（撤销也不返还额度）"""
+    __tablename__ = "direct_link_quotas"
+    __table_args__ = (db.UniqueConstraint("user_id", "week", name="uq_direct_link_user_week"),)
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    week = db.Column(db.String(8), nullable=False)  # ISO 周键，如 "2026-W38"
+    created_count = db.Column(db.Integer, default=0, nullable=False)
+    updated_at = db.Column(db.DateTime, default=now_utc, onupdate=now_utc, nullable=False)
 
 
 class UploadSession(db.Model):

@@ -158,6 +158,9 @@
                         {% endif %}
                         {% if enable_share %}
                         <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#shareModal" data-id="{{ f.id }}" title="分享"><i class="bi bi-share"></i></button>
+                        {% if not f.is_dir and not f.is_lost and q.plan and q.plan.name == 'svip' %}
+                        <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#directModal" data-id="{{ f.id }}" title="获取直链（SVIP）"><i class="bi bi-link-45deg"></i></button>
+                        {% endif %}
                         {% endif %}
                         <form method="post" action="{{ url_for('files.delete', file_id=f.id) }}" class="d-inline" data-confirm="确定移入回收站？">
                             <button class="btn btn-sm btn-outline-danger" title="删除"><i class="bi bi-trash"></i></button>
@@ -276,6 +279,25 @@
                 <div class="mb-2"><label class="form-label">下载次数限制（可选）</label><input type="number" name="max_downloads" class="form-control"></div>
             </div>
             <div class="modal-footer"><button class="btn btn-primary">生成链接</button></div>
+        </form>
+    </div></div>
+</div>
+
+<!-- 获取直链弹窗（仅 SVIP） -->
+<div class="modal fade" id="directModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">获取直链</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+        <form method="post" action="{{ url_for('share.direct_create') }}" id="directForm">
+            <div class="modal-body">
+                <input type="hidden" name="file_id" id="directFileId">
+                <div class="mb-2"><label class="form-label">有效期（天，留空为永久有效）</label>
+                    <input type="number" name="expire_days" class="form-control" min="1"></div>
+                <div class="form-text">
+                    直链可直接下载，无需登录；单条直链每周最多下载 5GB，
+                    每个 SVIP 用户每周最多生成 10 条直链。
+                </div>
+            </div>
+            <div class="modal-footer"><button class="btn btn-primary">生成直链</button></div>
         </form>
     </div></div>
 </div>
@@ -486,6 +508,11 @@ document.querySelectorAll('[data-bs-target="#copyModal"]').forEach(btn => {
 document.querySelectorAll('[data-bs-target="#shareModal"]').forEach(btn => {
     btn.addEventListener('click', () => {
         document.getElementById('shareFileId').value = btn.dataset.id;
+    });
+});
+document.querySelectorAll('[data-bs-target="#directModal"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.getElementById('directFileId').value = btn.dataset.id;
     });
 });
 

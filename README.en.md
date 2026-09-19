@@ -43,8 +43,7 @@ realfiles/
 │   ├── services/           # Business logic: files, quota, billing, remote download, auto-update
 │   ├── templates/          # Jinja2 templates
 │   └── utils/              # Helpers & Jinja filters
-├── build_install.py        # Builds the standalone installer (outputs to dist/)
-├── install-template.sh     # Installer script template (used by the builder)
+├── build_install.py        # Builds the standalone installer (installer template embedded inside; outputs to dist/)
 ├── VERSION                 # Version number (footer + auto-update comparison)
 └── dist/                   # Build artifact: RealFiles-release-<version>-install.sh
 ```
@@ -73,7 +72,7 @@ The installer auto-detects the package manager and installs dependencies, coveri
 
 > Alpine (apk / OpenRC) is not supported yet — the installer relies on systemd for service management. If you must use Alpine, run it manually via rc-service or a container.
 
-### Option 1: Standalone installer (recommended)
+### Install (standalone installer)
 
 Upload the build artifact `RealFiles-release-<version>-install.sh` to the server and run:
 
@@ -83,14 +82,7 @@ sudo bash RealFiles-release-<version>-install.sh
 
 The script automatically: installs system dependencies → creates the run user → deploys code to `/opt/realfiles` → generates the `.env` secret → creates a virtualenv and installs dependencies → registers and starts the `realfiles` systemd service.
 
-### Option 2: Install from the source tree
-
-Place the source code anywhere on the server and run:
-
-```bash
-sudo bash install-template.sh            # When the script sits next to the source
-sudo bash install-template.sh /path/to/source
-```
+> The source code and the install logic are both embedded in this single file — no other file needs to be uploaded to the server.
 
 ### Upgrade in place
 

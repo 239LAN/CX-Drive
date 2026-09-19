@@ -46,8 +46,7 @@ RealFiles/
 │   ├── services/           # 业务服务：文件、配额、计费、远程下载、自动更新
 │   ├── templates/          # Jinja2 模板
 │   └── utils/              # 工具函数与 Jinja 过滤器
-├── build_install.py        # 生成单文件安装包（输出到 dist/）
-├── install-template.sh     # 安装脚本模板（构建器用）
+├── build_install.py        # 生成单文件安装包（安装脚本模板内嵌其中，输出到 dist/）
 └── dist/                   # 构建产物：RealFiles-release-<版本>-install.sh
 ```
 
@@ -73,7 +72,7 @@ python app.py            # 浏览器打开 http://127.0.0.1:5000
 
 > Alpine（apk / OpenRC）暂不支持——脚本依赖 systemd 托管服务；若必须使用，可手动改用 rc-service 或容器方式。
 
-### 方式一：单文件安装包（推荐）
+### 安装（单文件安装包）
 
 将构建产物 `RealFiles-release-<版本>-install.sh` 上传到服务器后执行：
 
@@ -83,14 +82,7 @@ sudo bash RealFiles-release-<版本>-install.sh
 
 脚本会自动完成：安装系统依赖 → 创建运行用户 → 部署代码到 `/opt/realfiles` → 生成密钥 `.env` → 创建虚拟环境并安装依赖 → 注册并启动 systemd 服务 `realfiles`。
 
-### 方式二：源码目录直接安装
-
-把项目源码放到服务器任意目录，执行：
-
-```bash
-sudo bash install-template.sh            # 脚本与源码同目录
-sudo bash install-template.sh /path/to/源码目录
-```
+> 源码与安装逻辑全部内嵌在这一个文件里，服务器上无需再上传其他文件。
 
 ### 覆盖更新
 

@@ -10,7 +10,7 @@ from flask_login import login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from app.extensions import db
-from app.models import ShareLink, File, AnonDlWeek
+from app.models import ShareLink, File, AnonDlWeek, DirectLink, DirectLinkQuota
 from app.utils.helpers import (
     utcnow, current_file_owner, guess_mimetype, content_disposition,
 )
@@ -97,7 +97,16 @@ def my_shares():
     owner = current_file_owner()
     links = ShareLink.query.filter_by(user_id=owner.id).order_by(
         ShareLink.created_at.desc()).all()
-    return render_template("share/list.html", links=links)
+    dlinks = DirectLink.query.filter_by(user_id=owner.id).order_by(
+        DirectLink.created_at.desc()).all()
+    return render_template(
+        "share/list.html", links=links,
+        direct_rows=[{"link": l, "week_used": _direct_week_used(l)} for l in dlinks],
+        is_svip=_is_svip(owner),
+        direct_created=_direct_created_this_week(owner.id),
+        direct_create_limit=DIRECT_WEEKLY_CREATE,
+        direct_week_limit=DIRECT_WEEKLY_BYTES,
+    )
 
 
 @share_bp.route("/share/create", methods=["POST"])
@@ -272,8 +281,8 @@ def _build_crumbs(folder: File, root: File):
     return crumbs
 
 
-ANON_SPEED_LIMIT = 1 * 1024 * 1024  # 未登录访客下载限速 1 MiB/s
-ANON_WEEKLY_QUOTA = 1 * 1024 ** 3   # 未登录访客单 IP 每周最多 1GB
+ANON_SPEED_LIMIT = 10 * 1024 * 1024  # 未登录访客下载限速 10 MiB/s
+ANON_WEEKLY_QUOTA = 1 * 1024 ** 3    # 未登录访客单 IP 每周最多 1GB
 
 
 def _client_ip() -> str:
@@ -328,7 +337,7 @@ def _send_file(link: ShareLink, f: File):
 
 
 def _stream_limited(path: str, download_name: str, size: int, ip: str, used0: int):
-    """未登录访客下载：按 1 MiB/s 流式限速，并实时扣减该 IP 本周匿名配额"""
+    """未登录访客下载：按 10 MiB/s 流式限速，并实时扣减该 IP 本周匿名配额"""
     # 声明长度不得超出剩余匿名配额，保证 Content-Length 与实际发送字节一致
     length = min(size, max(ANON_WEEKLY_QUOTA - used0, 0))
 
@@ -361,4 +370,154 @@ def cancel(link_id):
         db.session.delete(link)
         db.session.commit()
         flash("已取消分享", "success")
+    return redirect(url_for("share.my_shares"))
+
+
+# ---------------- SVIP 直链 ----------------
+
+DIRECT_WEEKLY_BYTES = 5 * 1024 ** 3  # 单条直链每周最多下载 5GB
+DIRECT_WEEKLY_CREATE = 10            # 每个 SVIP 用户每周最多生成 10 条
+
+
+def _is_svip(user) -> bool:
+    """当前生效套餐是否为 SVIP（会员到期自动回落为免费版）"""
+    from app.services.quota_service import get_plan
+    plan = get_plan(user)
+    return plan is not None and plan.name == "svip"
+
+
+def _direct_created_this_week(user_id: int) -> int:
+    row = DirectLinkQuota.query.filter_by(user_id=user_id, week=_week_key()).first()
+    return int(row.created_count) if row else 0
+
+
+def _direct_consume_create(user_id: int):
+    """累加该用户本周直链生成计数（撤销也不返还）"""
+    row = DirectLinkQuota.query.filter_by(user_id=user_id, week=_week_key()).first()
+    if row is None:
+        db.session.add(DirectLinkQuota(user_id=user_id, week=_week_key(), created_count=1))
+    else:
+        row.created_count += 1
+    db.session.commit()
+
+
+def _direct_week_used(link: DirectLink) -> int:
+    """该直链当周已用下载字节；跨周自动归零"""
+    return int(link.week_bytes or 0) if link.week_key == _week_key() else 0
+
+
+def _direct_add(link: DirectLink, delta: int):
+    """增减该直链当周已用流量（delta 可为负，用于退回未发送部分）"""
+    if delta == 0:
+        return
+    week = _week_key()
+    if link.week_key != week:
+        link.week_key = week
+        link.week_bytes = 0
+    link.week_bytes = max(int(link.week_bytes or 0) + delta, 0)
+    db.session.commit()
+
+
+@share_bp.route("/direct/create", methods=["POST"])
+@login_required
+def direct_create():
+    """生成直链（仅 SVIP，每用户每周限 10 条）"""
+    owner = current_file_owner()
+    if not _is_svip(owner):
+        flash("获取直链为 SVIP 专享功能，请升级会员", "danger")
+        return redirect(request.referrer or url_for("files.index"))
+
+    try:
+        f = db.session.get(File, int(request.form.get("file_id") or 0))
+    except (TypeError, ValueError):
+        abort(404, "文件不存在或无权访问")
+    if f is None or f.user_id != owner.id or f.is_dir or f.deleted_at is not None:
+        abort(404, "文件不存在或无权访问")
+
+    if _direct_created_this_week(owner.id) >= DIRECT_WEEKLY_CREATE:
+        flash(f"本周直链生成数量已达上限（{DIRECT_WEEKLY_CREATE} 条），请下周再试", "danger")
+        return redirect(request.referrer or url_for("files.index"))
+
+    link = DirectLink(file_id=f.id, user_id=owner.id, week_key=_week_key(), week_bytes=0)
+    expire_days = request.form.get("expire_days") or None
+    if expire_days:
+        try:
+            days = int(expire_days)
+        except (TypeError, ValueError):
+            abort(400, "有效期必须是整数天")
+        link.expire_at = utcnow() + timedelta(days=days)
+    db.session.add(link)
+    _direct_consume_create(owner.id)  # 与上面的 add 同一次提交落库
+    flash("直链已生成，可在「我的分享」页查看", "success")
+    return redirect(request.referrer or url_for("share.my_shares"))
+
+
+@share_bp.route("/d/<token>")
+def direct_download(token):
+    """直链下载端点（GET，无需登录）：单条直链每周最多下载 5GB"""
+    import os
+    from app.services import file_service
+
+    link = DirectLink.query.filter_by(token=token).first()
+    if link is None:
+        abort(404, "直链不存在或已撤销")
+    if link.expire_at is not None and link.expire_at <= utcnow():
+        abort(410, "直链已过期")
+
+    f = db.session.get(File, link.file_id)
+    if f is None or f.deleted_at is not None:
+        abort(410, "文件已被删除")
+    if f.is_lost:
+        abort(404, "文件已丢失")
+    path = file_service.get_physical_path(f.storage_key, f.storage_id)
+    if not os.path.exists(path):
+        abort(404, "文件实体丢失")
+
+    remaining = DIRECT_WEEKLY_BYTES - _direct_week_used(link)
+    if remaining <= 0:
+        abort(429, "该直链本周下载流量已用尽（5GB），请下周再试")
+
+    # 以真实文件大小为准，且本次响应长度不超过该直链本周剩余额度
+    length = min(os.path.getsize(path), remaining)
+    link.download_count += 1
+    _direct_add(link, length)  # 先预占，流结束时退回未发送部分
+    return _direct_stream(path, f.name, length, link)
+
+
+def _direct_stream(path: str, download_name: str, length: int, link: DirectLink):
+    chunk = 256 * 1024
+
+    def generate():
+        sent = 0
+        try:
+            with open(path, "rb") as fh:
+                while sent < length:
+                    data = fh.read(min(chunk, length - sent))
+                    if not data:
+                        break
+                    sent += len(data)
+                    yield data
+        finally:
+            # 客户端提前断开时退回未发送的额度，避免多扣周流量
+            if sent < length:
+                try:
+                    _direct_add(link, sent - length)
+                except Exception:  # noqa: BLE001
+                    db.session.rollback()
+
+    resp = Response(stream_with_context(generate()), direct_passthrough=True)
+    resp.headers["Content-Type"] = guess_mimetype(download_name)
+    resp.headers["Content-Length"] = str(length)
+    resp.headers["Content-Disposition"] = content_disposition(download_name)
+    return resp
+
+
+@share_bp.route("/direct/<int:link_id>/revoke", methods=["POST"])
+@login_required
+def direct_revoke(link_id):
+    link = DirectLink.query.filter_by(id=link_id, user_id=current_file_owner().id).first()
+    if link:
+        db.session.delete(link)
+        db.session.commit()
+        flash("已撤销直链", "success")
     return redirect(url_for("share.my_shares"))
