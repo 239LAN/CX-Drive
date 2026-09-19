@@ -5,7 +5,7 @@
 交由安装脚本写入的 sudoers 规则以 root 在独立 systemd 单元中执行覆盖更新
 （脱离 realfiles.service 的 cgroup，避免更新脚本重启服务时自身被杀）。
 
-检查结果（最新版本 / 是否有更新 / 检查时间 / 错误）落盘到
+检查结果（最新版本 / 是否有更新 / 检查时间 / 错误 / 更新日志）落盘到
 UPDATE_DIR/status.json，供页脚跨进程读取；是否真正安装由 config.yml 的
 update.enabled 决定，关闭时仅检查并在页脚提示。
 
@@ -38,7 +38,9 @@ _state_lock = threading.Lock()
 _cache = {"key": None, "data": None}
 
 # 落盘的状态字段（current / has_update 每次读取时按本地 VERSION 重新计算）
-_FIELDS = ("latest", "checked_at", "error")
+_FIELDS = ("latest", "checked_at", "error", "notes")
+# 更新日志（Release 正文）最多缓存的字符数，避免超长正文写进状态文件
+NOTES_LIMIT = 8000
 
 
 def _config():
@@ -97,7 +99,7 @@ def read_status():
     return status
 
 
-def _status(cfg, latest="", checked_at="", error=""):
+def _status(cfg, latest="", checked_at="", error="", notes=""):
     current = cfg["VERSION"]
     return {
         "current": current,
@@ -105,11 +107,12 @@ def _status(cfg, latest="", checked_at="", error=""):
         "has_update": bool(latest) and is_newer(latest, current),
         "checked_at": str(checked_at or ""),
         "error": str(error or ""),
+        "notes": str(notes or ""),
     }
 
 
-def _write_status(cfg, latest="", checked_at="", error=""):
-    status = _status(cfg, latest=latest, checked_at=checked_at, error=error)
+def _write_status(cfg, latest="", checked_at="", error="", notes=""):
+    status = _status(cfg, latest=latest, checked_at=checked_at, error=error, notes=notes)
     path = os.path.join(cfg["UPDATE_DIR"], "status.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
@@ -160,6 +163,14 @@ def _pick_asset(release):
     return "", "", ""
 
 
+def _release_notes(release):
+    """Release 正文即更新日志（发布时填写对应版本说明），过长时截断"""
+    notes = str(release.get("body") or "").strip()
+    if len(notes) > NOTES_LIMIT:
+        notes = notes[:NOTES_LIMIT].rstrip() + "\n……（完整内容请查看 Release 页面）"
+    return notes
+
+
 def _download(url, sha256, repo, dest, proxy=""):
     """下载发布脚本并校验摘要，返回脚本路径
 
@@ -191,6 +202,24 @@ def _download_once(url, sha256, repo, dest):
     return dest
 
 
+def update_detail():
+    """供管理后台弹窗使用：状态 + 更新日志
+
+    日志优先取最近一次检查的缓存；老状态文件里没有时实时补拉一次，
+    拉取失败不影响展示（返回空日志，前端引导用户去 Release 页）。
+    """
+    status = read_status()
+    if not status["has_update"] or status["notes"]:
+        return status
+    cfg = _config()
+    try:
+        release = _fetch_release(cfg["UPDATE_REPO"], proxy=cfg["UPDATE_PROXY"])
+    except (HTTPError, URLError, OSError, ValueError):
+        return status
+    status["notes"] = _release_notes(release)
+    return status
+
+
 def trigger_update(trigger):
     """以 root 在独立 systemd 单元中执行覆盖更新
 
@@ -216,14 +245,15 @@ def check(apply_update=None):
         return _write_status(cfg, error=f"检查更新失败：{e}", checked_at=checked_at)
 
     latest = str(release.get("tag_name") or "").strip().lstrip("vV")
+    notes = _release_notes(release)
     if not latest:
         return _write_status(cfg, error="未获取到版本号", checked_at=checked_at)
     if not is_newer(latest, cfg["VERSION"]) or not apply_update:
-        return _write_status(cfg, latest=latest, checked_at=checked_at)
+        return _write_status(cfg, latest=latest, checked_at=checked_at, notes=notes)
 
     asset, url, sha256 = _pick_asset(release)
     if not url:
-        return _write_status(cfg, latest=latest, checked_at=checked_at,
+        return _write_status(cfg, latest=latest, checked_at=checked_at, notes=notes,
                              error=f"发布中未找到 {asset or 'RealFiles-release-*-install.sh'} 附件")
     dest = os.path.join(cfg["UPDATE_DIR"], "current.sh")
     try:
@@ -231,6 +261,6 @@ def check(apply_update=None):
         _download(url, sha256, cfg["UPDATE_REPO"], dest, proxy=cfg["UPDATE_PROXY"])
         trigger_update(cfg["UPDATE_TRIGGER"])
     except (HTTPError, URLError, OSError, ValueError, subprocess.SubprocessError) as e:
-        return _write_status(cfg, latest=latest, checked_at=checked_at,
+        return _write_status(cfg, latest=latest, checked_at=checked_at, notes=notes,
                              error=f"自动更新失败：{e}")
-    return _write_status(cfg, latest=latest, checked_at=checked_at)
+    return _write_status(cfg, latest=latest, checked_at=checked_at, notes=notes)

@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from flask import (
     Blueprint, render_template, request, redirect, url_for, flash, abort, session,
-    current_app,
+    current_app, jsonify,
 )
 from flask_login import login_required, current_user
 
@@ -731,6 +731,12 @@ def settings_update():
     else:
         flash(f"当前已是最新版本 {status.get('current')}", "success")
     return redirect(url_for("admin.settings_page"))
+
+
+@admin_bp.route("/settings/update-info")
+def settings_update_info():
+    """更新状态与更新日志（JSON，供页脚/后台的新版本弹窗展示）"""
+    return jsonify(update_service.update_detail())
 
 
 @admin_bp.route("/settings/restart", methods=["POST"])

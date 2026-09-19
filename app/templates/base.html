@@ -114,15 +114,58 @@
         </div>
         {% if update_info.has_update %}
         <div class="mt-1">
+            {% if current_user.is_authenticated and current_user.is_admin %}
+            <button type="button" class="btn btn-link btn-sm p-0 link-primary text-decoration-none"
+                    data-bs-toggle="modal" data-bs-target="#updateModal">
+                <i class="bi bi-arrow-up-circle"></i> 有新版本 v{{ update_info.latest }}
+            </button>
+            {% else %}
             <a class="link-primary text-decoration-none"
                href="https://github.com/{{ update_repo }}/releases/tag/v{{ update_info.latest }}"
                target="_blank" rel="noopener">
                 <i class="bi bi-arrow-up-circle"></i> 有新版本 v{{ update_info.latest }}
             </a>
+            {% endif %}
         </div>
         {% endif %}
     </div>
 </footer>
+
+{% if update_info.has_update and current_user.is_authenticated and current_user.is_admin %}
+<!-- 新版本弹窗：展示更新日志，可直接触发后台更新（无需手动下载脚本） -->
+<div class="modal fade" id="updateModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <div class="modal-header py-2">
+                <h6 class="modal-title">
+                    <i class="bi bi-arrow-up-circle"></i>
+                    发现新版本 v{{ update_info.latest }}
+                </h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+                <p class="small text-muted mb-2">
+                    当前版本 v{{ update_info.current }}。点击「立即更新」将自动下载并覆盖安装，服务会短暂重启，
+                    数据库、用户数据与站点配置均会保留。
+                </p>
+                <div class="border rounded bg-body-tertiary p-2 small" id="updateNotes"
+                     style="white-space: pre-wrap; max-height: 45vh; overflow-y: auto;">正在加载更新日志…</div>
+            </div>
+            <div class="modal-footer py-2 justify-content-between">
+                <a class="btn btn-outline-secondary btn-sm"
+                   href="https://github.com/{{ update_repo }}/releases/tag/v{{ update_info.latest }}"
+                   target="_blank" rel="noopener">查看 Release</a>
+                <form method="post" action="{{ url_for('admin.settings_update') }}" id="updateForm">
+                    <input type="hidden" name="action" value="update">
+                    <button type="submit" class="btn btn-success btn-sm" id="updateBtn">
+                        <i class="bi bi-download"></i> 立即更新
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
 
 <!-- 通用确认/提示对话框：替代浏览器原生的 confirm/alert -->
 <div class="modal fade" id="cxDialog" tabindex="-1" aria-hidden="true">
@@ -193,6 +236,35 @@
         cxConfirm(form.dataset.confirm, { danger }).then(ok => {
             if (ok) form.submit();
         });
+    });
+})();
+
+// 新版本弹窗：打开时拉取更新日志，确认后直接触发后台覆盖更新
+(function () {
+    const modalEl = document.getElementById('updateModal');
+    if (!modalEl) return;
+    const notesEl = document.getElementById('updateNotes');
+    const form = document.getElementById('updateForm');
+    const btn = document.getElementById('updateBtn');
+    let loaded = false;
+
+    modalEl.addEventListener('show.bs.modal', async () => {
+        if (loaded) return;
+        try {
+            const resp = await fetch('{{ url_for("admin.settings_update_info") }}',
+                                     { headers: { 'Accept': 'application/json' } });
+            const data = await resp.json();
+            notesEl.textContent = (data.notes || '').trim()
+                || '本次发布未填写更新说明，可点击「查看 Release」了解详情。';
+            loaded = true;
+        } catch (err) {
+            notesEl.textContent = '更新日志加载失败，可点击「查看 Release」了解详情。';
+        }
+    });
+
+    form.addEventListener('submit', () => {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 正在更新…';
     });
 })();
 </script>

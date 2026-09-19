@@ -16,7 +16,7 @@ RealFiles is an out-of-the-box, self-hostable lightweight cloud drive system. Bu
 - **Admin console**: user management, plan / add-on management, balance adjustment, membership gifting, statistics dashboard
 - **Security by design**: hashed passwords, upload extension allow-list plus magic-byte sniffing (rejects executables and scripts disguised as common formats), brute-force lockout on share passwords (per IP + share), external links served only through the web page to prevent hot-linking
 - **One-command deployment**: the standalone installer embeds the full source code; `sudo bash RealFiles-release-<version>-install.sh` performs a fresh install or an in-place upgrade
-- **Auto update**: checks GitHub Releases daily at 00:00 and installs new versions in place (disable in `config.yml`; falls back to a public proxy when GitHub is unreachable); the footer shows the current version and update hints
+- **Auto update**: checks GitHub Releases daily at 00:00 and installs new versions in place (disable in `config.yml`; falls back to a public proxy when GitHub is unreachable); the footer shows the current version and update hints, and admins can open a modal to read the release notes and update with one click
 
 ## Tech Stack
 
