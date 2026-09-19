@@ -233,6 +233,10 @@ class StoragePoint(db.Model):
     # 停用 = 能读不能写
     enabled = db.Column(db.Boolean, default=True, nullable=False)
     sort = db.Column(db.Integer, default=0, nullable=False)
+    # 健康状态：读写失败时自动摘除（不再被选为写入点），恢复后由定时任务自动回归
+    healthy = db.Column(db.Boolean, default=True, nullable=False)
+    health_error = db.Column(db.String(256), nullable=True)
+    last_health_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=now_utc, nullable=False)
 
     files = db.relationship("File", backref="storage_point", lazy="dynamic")
@@ -383,6 +387,38 @@ class RemoteDownload(db.Model):
     storage_key = db.Column(db.String(64), nullable=True)  # 完成后生成的物理文件 key
     storage_id = db.Column(db.Integer, db.ForeignKey("storage_points.id"), nullable=True)
     file_id = db.Column(db.Integer, db.ForeignKey("files.id"), nullable=True)
+    created_at = db.Column(db.DateTime, default=now_utc, nullable=False)
+    started_at = db.Column(db.DateTime, nullable=True)
+    last_progress_at = db.Column(db.DateTime, nullable=True)
+    finished_at = db.Column(db.DateTime, nullable=True)
+
+
+class TransferTask(db.Model):
+    """远端存储点传输任务：fetch = 远端 -> 本地缓存，store = 本地暂存 -> 远端
+
+    远端读写放在请求线程里会撞上 gunicorn 的超时（大文件 502），因此统一改为
+    入队后由后台线程执行，前端按 token 轮询进度。
+    每个 (kind, point_id, storage_key) 只有一行记录，天然完成并发去重。
+    """
+    __tablename__ = "transfer_tasks"
+    __table_args__ = (
+        db.UniqueConstraint("kind", "point_id", "storage_key", name="uq_transfer_task"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    # 对外暴露的随机标识（避免用自增 id 被枚举）
+    token = db.Column(db.String(32), unique=True, default=gen_uuid, nullable=False)
+    kind = db.Column(db.String(8), default="fetch", nullable=False)  # fetch / store
+    point_id = db.Column(db.Integer, db.ForeignKey("storage_points.id"),
+                         nullable=False, index=True)
+    storage_key = db.Column(db.String(64), nullable=False, index=True)
+    # store 方向的本地暂存文件（完成后删除）
+    src_path = db.Column(db.String(1024), nullable=True)
+    status = db.Column(db.String(16), default="queued", nullable=False, index=True)
+    # queued / running / done / failed
+    total_bytes = db.Column(db.BigInteger, default=0, nullable=False)
+    done_bytes = db.Column(db.BigInteger, default=0, nullable=False)
+    error = db.Column(db.String(512), nullable=True)
     created_at = db.Column(db.DateTime, default=now_utc, nullable=False)
     started_at = db.Column(db.DateTime, nullable=True)
     last_progress_at = db.Column(db.DateTime, nullable=True)

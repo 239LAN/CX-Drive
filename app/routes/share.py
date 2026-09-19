@@ -11,6 +11,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 from app.extensions import db
 from app.models import ShareLink, File, AnonDlWeek, DirectLink, DirectLinkQuota
+from app.routes.transfer import current_target, waiting_redirect
 from app.utils.helpers import (
     utcnow, current_file_owner, guess_mimetype, content_disposition,
 )
@@ -317,8 +318,12 @@ def _send_file(link: ShareLink, f: File):
     from app.services import file_service
     if f.is_lost:
         abort(404, "文件已丢失")
-    path = file_service.get_physical_path(f.storage_key, f.storage_id)
-    if not os.path.exists(path):
+    path, task = file_service.local_path_or_pending(f)
+    if task is not None:
+        # 远端文件先取回；完成后按原 POST 表单重放回本入口继续下载
+        return waiting_redirect([task.token], current_target(), f.name,
+                                method="post", fields={"file": [str(f.id)]})
+    if not path or not os.path.exists(path):
         abort(404, "文件实体丢失")
     link.download_count += 1
     db.session.commit()
@@ -469,8 +474,11 @@ def direct_download(token):
         abort(410, "文件已被删除")
     if f.is_lost:
         abort(404, "文件已丢失")
-    path = file_service.get_physical_path(f.storage_key, f.storage_id)
-    if not os.path.exists(path):
+    path, task = file_service.local_path_or_pending(f)
+    if task is not None:
+        # 远端文件先取回，进度页完成后自动回到直链地址继续下载
+        return waiting_redirect([task.token], current_target(), f.name)
+    if not path or not os.path.exists(path):
         abort(404, "文件实体丢失")
 
     remaining = DIRECT_WEEKLY_BYTES - _direct_week_used(link)

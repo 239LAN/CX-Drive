@@ -6,6 +6,7 @@ from flask import (
 )
 from flask_login import login_required
 
+from app.routes.transfer import current_target, waiting_redirect
 from app.services import file_service
 from app.services.quota_service import QuotaError, check_preview
 from app.utils.helpers import current_file_owner
@@ -43,8 +44,11 @@ def view(file_id):
         abort(403, str(e))
 
     ext = os.path.splitext(f.name)[1].lower()
-    path = file_service.get_physical_path(f.storage_key, f.storage_id)
-    if not os.path.exists(path):
+    path, task = file_service.local_path_or_pending(f)
+    if task is not None:
+        # 远端文件先取回，完成后自动回到本页；页面里的 stream 请求即能命中缓存
+        return waiting_redirect(task.token, current_target(), f.name)
+    if not path or not os.path.exists(path):
         abort(404, "文件实体丢失")
 
     if ext in IMAGE_EXT:
@@ -87,8 +91,11 @@ def stream(file_id):
     except QuotaError as e:
         abort(403, str(e))
 
-    path = file_service.get_physical_path(f.storage_key, f.storage_id)
-    if not os.path.exists(path):
+    path, task = file_service.local_path_or_pending(f)
+    if task is not None:
+        # 正常路径下 view 已先取回；直接访问本地址时同样跳进度页等待
+        return waiting_redirect(task.token, current_target(), f.name)
+    if not path or not os.path.exists(path):
         abort(404)
 
     ext = os.path.splitext(f.name)[1].lower()

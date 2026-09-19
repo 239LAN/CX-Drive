@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}正在取回文件 · {{ site_name }}{% endblock %}
+{% block content %}
+<div class="card mx-auto" style="max-width: 560px;">
+    <div class="card-body p-4 text-center">
+        <div class="mb-2" style="font-size: 2.2rem; color: #0d6efd;">
+            <i class="bi bi-cloud-arrow-down-fill"></i>
+        </div>
+        <h6 class="mb-1 text-truncate" title="{{ title }}">{{ title }}</h6>
+        <p class="text-muted small mb-3" id="twText">正在准备取回…</p>
+
+        <div class="progress mb-2" style="height: 10px;">
+            <div class="progress-bar progress-bar-striped progress-bar-animated"
+                 id="twBar" style="width: 0%"></div>
+        </div>
+        <div class="small text-muted mb-1" id="twMeta">已传输 0 B</div>
+        <div class="small text-muted">文件存放在远端存储点，取回完成后会自动开始下载，请勿关闭本页。</div>
+
+        <div class="alert alert-danger py-2 small mt-3 mb-0 d-none" id="twError"></div>
+        <button type="button" class="btn btn-primary btn-sm mt-3 d-none" id="twRetry">重试</button>
+    </div>
+</div>
+{% if post_form %}
+{# 原入口是 POST：取回完成后用同样的字段重新提交，避免跳回时 405 #}
+<form id="twForm" method="post" action="{{ next_url }}" class="d-none">
+    {% for name, values in fields.items() %}{% for value in values %}
+    <input type="hidden" name="{{ name }}" value="{{ value }}">
+    {% endfor %}{% endfor %}
+</form>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    const tokens = {{ tokens|tojson }};
+    const nextUrl = {{ next_url|tojson }};
+    const statusUrl = {{ url_for("transfer.status")|tojson }};
+    const bar = document.getElementById('twBar');
+    const textEl = document.getElementById('twText');
+    const metaEl = document.getElementById('twMeta');
+    const errEl = document.getElementById('twError');
+    const retryBtn = document.getElementById('twRetry');
+    const form = document.getElementById('twForm');
+    let timer = null;
+
+    function human(n) {
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let i = 0;
+        while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+        return (i === 0 ? n : n.toFixed(1)) + ' ' + units[i];
+    }
+
+    function stop() {
+        if (timer) { clearTimeout(timer); timer = null; }
+    }
+
+    // 回到原入口继续下载：原入口是 POST 的（分享下载/解压/压缩）走表单重放
+    function proceed() {
+        if (form) { form.submit(); } else { location.replace(nextUrl); }
+    }
+
+    function fail(message) {
+        stop();
+        bar.classList.remove('progress-bar-animated', 'progress-bar-striped');
+        bar.classList.add('bg-danger');
+        textEl.textContent = '取回失败';
+        errEl.textContent = message || '取回失败，请重试';
+        errEl.classList.remove('d-none');
+        retryBtn.classList.remove('d-none');
+    }
+
+    async function poll() {
+        try {
+            const resp = await fetch(statusUrl + '?tokens=' + encodeURIComponent(tokens),
+                                     { headers: { 'Accept': 'application/json' } });
+            const data = await resp.json();
+            if (data.status === 'done') {
+                stop();
+                bar.style.width = '100%';
+                textEl.textContent = '取回完成，正在开始下载…';
+                proceed();
+                return;
+            }
+            if (data.status === 'failed') {
+                fail(data.error);
+                return;
+            }
+            bar.style.width = Math.max(2, data.percent) + '%';
+            textEl.textContent = data.status === 'queued'
+                ? '排队等待取回…'
+                : (data.count > 1 ? '正在取回 ' + data.count + ' 个文件…' : '正在从远端存储点取回文件…');
+            metaEl.textContent = data.total > 0
+                ? human(data.done) + ' / ' + human(data.total) + '（' + data.percent + '%）'
+                : '已传输 ' + human(data.done);
+        } catch (err) {
+            // 网络抖动：保持等待，下一轮继续轮询
+        }
+        timer = setTimeout(poll, 1000);
+    }
+
+    retryBtn.addEventListener('click', () => { errEl.classList.add('d-none'); retryBtn.classList.add('d-none'); proceed(); });
+    poll();
+})();
+</script>
+{% endblock %}

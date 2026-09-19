@@ -10,7 +10,8 @@ from flask_login import login_required
 
 from app.extensions import db
 from app.models import File, UploadSession
-from app.services import file_service
+from app.routes.transfer import current_target, waiting_redirect
+from app.services import file_service, transfer_service
 from app.services.quota_service import (
     QuotaError, check_upload, check_download, get_speed_limit,
     consume_traffic, effective_quota,
@@ -36,6 +37,24 @@ def _parse_ids(raw) -> list:
     return out
 
 
+def _pending_files(items) -> dict:
+    """列表中的在途远端传输任务：{文件 id: {"kind": ..., "token": ...}}
+
+    用于在文件列表上标记「取回中 / 上传中」，并轮询到全部结束为止。
+    """
+    pending = transfer_service.pending_map()
+    if not pending:
+        return {}
+    out = {}
+    for f in items:
+        if f.is_dir or not f.storage_key or f.storage_id is None:
+            continue
+        task = pending.get((int(f.storage_id), f.storage_key))
+        if task is not None:
+            out[f.id] = {"kind": task.kind, "token": task.token}
+    return out
+
+
 @files_bp.route("/files")
 @files_bp.route("/files/<int:parent_id>")
 @login_required
@@ -55,13 +74,13 @@ def index(parent_id=None):
         items = file_service.search(owner, keyword, sort, order)
         return render_template("files/index.html", parent=None, items=items, crumbs=[],
                                q=q, search=keyword, sort=sort, order=order, owner=owner,
-                               lost_count=lost_count)
+                               lost_count=lost_count, pending=_pending_files(items))
 
     parent, items = file_service.list_dir(owner, parent_id, sort, order)
     crumbs = file_service.get_breadcrumb(parent)
     return render_template("files/index.html", parent=parent, items=items, crumbs=crumbs,
                            q=q, search="", sort=sort, order=order, owner=owner,
-                           lost_count=lost_count)
+                           lost_count=lost_count, pending=_pending_files(items))
 
 
 @files_bp.route("/files/folder/new", methods=["POST"])
@@ -136,8 +155,11 @@ def download(file_id):
 def _download_file(owner, f: File):
     if f.is_lost:
         abort(404, "文件已丢失")
-    path = file_service.get_physical_path(f.storage_key, f.storage_id)
-    if not os.path.exists(path):
+    path, task = file_service.local_path_or_pending(f)
+    if task is not None:
+        # 远端文件已入队后台取回：跳进度页，取回完成后自动回到本地址继续下载
+        return waiting_redirect(task.token, current_target(), f.name)
+    if not path or not os.path.exists(path):
         abort(404, "文件实体丢失")
 
     # 一律以真实文件大小为准：库中记录可能过期，浏览器会按 Content-Length 校验
@@ -191,6 +213,11 @@ def _download_folder(owner, f: File):
     except QuotaError as e:
         flash(str(e), "danger")
         return redirect(request.referrer or url_for("files.index"))
+
+    # 远端文件先入队后台取回，全部到位后再打包，避免请求线程被拖到超时
+    tokens = file_service.prefetch_files([f])
+    if tokens:
+        return waiting_redirect(tokens, current_target(), f.name)
 
     fd, zip_path = tempfile.mkstemp(suffix=".zip")
     os.close(fd)
@@ -387,6 +414,11 @@ def batch_download():
         flash(str(e), "danger")
         return redirect(request.referrer or url_for("files.index"))
 
+    # 远端文件先入队后台取回，全部到位后再打包
+    tokens = file_service.prefetch_files(nodes)
+    if tokens:
+        return waiting_redirect(tokens, current_target(), "所选文件")
+
     fd, zip_path = tempfile.mkstemp(suffix=".zip")
     os.close(fd)
     try:
@@ -432,6 +464,13 @@ def compress():
         return redirect(request.referrer or url_for("files.index"))
     parent_id = request.form.get("parent_id") or None
     try:
+        nodes = file_service.owned_files(current_file_owner(), ids)
+        # 远端文件先入队后台取回，全部到位后再压缩
+        tokens = file_service.prefetch_files(nodes)
+        if tokens:
+            return waiting_redirect(tokens, current_target(), "所选文件",
+                                    method="post",
+                                    fields={"ids": ids, "parent_id": parent_id})
         f = file_service.compress(current_file_owner(), ids, parent_id)
         flash(f"已生成压缩包「{f.name}」", "success")
     except (ValueError, PermissionError, QuotaError) as e:
@@ -451,6 +490,16 @@ def extract(file_id):
         except (PermissionError, ValueError) as e:
             flash(str(e), "danger")
             return redirect(request.referrer or url_for("files.index"))
+    try:
+        node = file_service.get_owned_file(owner, file_id)
+    except (PermissionError, ValueError) as e:
+        flash(str(e), "danger")
+        return redirect(request.referrer or url_for("files.index"))
+    # 远端压缩包先入队后台取回，到位后再解压
+    tokens = file_service.prefetch_files([node])
+    if tokens:
+        return waiting_redirect(tokens, current_target(), node.name,
+                                method="post", fields={"parent_id": parent_id})
     try:
         count, skipped = file_service.extract_zip(owner, file_id, parent_id)
         if skipped:
@@ -495,8 +544,7 @@ def upload_init():
     if md5:
         existing = File.query.filter_by(
             user_id=owner.id, md5=md5, is_dir=False, is_lost=False).first()
-        if existing and existing.storage_key and os.path.exists(
-                file_service.get_physical_path(existing.storage_key, existing.storage_id)):
+        if existing and existing.storage_key and file_service.cached_local_path(existing):
             try:
                 f = file_service.create_reference(
                     owner, parent_id, filename, total_size,

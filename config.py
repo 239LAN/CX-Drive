@@ -296,10 +296,12 @@ class Config:
     UPLOAD_TMP_ROOT = os.environ.get("UPLOAD_TMP_ROOT", str(BASE_DIR / "uploads"))
     # 远程下载临时目录
     REMOTE_TMP_ROOT = os.environ.get("REMOTE_TMP_ROOT", str(BASE_DIR / "uploads" / "remote"))
-    # FTP 存储点文件拉取到本地的缓存目录
+    # 远端存储点文件取回到本地的缓存目录
     STORAGE_CACHE_ROOT = os.environ.get("STORAGE_CACHE_ROOT", str(BASE_DIR / "storage_cache"))
-    # FTP 缓存有效期（秒），超期由后台任务清理
+    # 缓存有效期（秒），超期由后台任务清理（命中缓存的读取会续期，热文件不会过期）
     STORAGE_CACHE_TTL = 3600
+    # 缓存总量上限（字节），超出后按 LRU 淘汰；0 = 不限制
+    STORAGE_CACHE_MAX_BYTES = int(os.environ.get("STORAGE_CACHE_MAX_BYTES", 0) or 0)
     CHUNK_SIZE = 4 * 1024 * 1024
 
     # 会话

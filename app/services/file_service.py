@@ -8,7 +8,7 @@ from flask import current_app
 
 from app.extensions import db
 from app.models import File, User
-from app.services import storage_service
+from app.services import storage_service, transfer_service
 from app.services.quota_service import QuotaError, check_upload, effective_quota
 from app.services.storage_service import StorageFullError
 from app.utils.helpers import (
@@ -44,6 +44,28 @@ def _node_point(node):
 def _storage_path(storage_key: str, point=None) -> str:
     """物理实体的本地可读路径（FTP 存储点会先拉取到本地缓存）"""
     return storage_service.read_path(point, storage_key)
+
+
+def _store_path(point, storage_key: str, tmp_path: str, move: bool = True):
+    """把已落盘的临时文件写入存储点
+
+    远端存储点上传耗时较长，改为转入后台任务：请求线程立即返回，上传进度由
+    前端按任务 token 轮询，暂存文件同时可供预览/下载读取。
+    """
+    if storage_service.is_remote(point):
+        transfer_service.enqueue_store(
+            point, storage_key, transfer_service.stage_path(tmp_path))
+    else:
+        storage_service.write_from_path(point, storage_key, tmp_path, move=move)
+
+
+def _store_stream(point, storage_key: str, stream):
+    """把上传流写入存储点（远端存储点先落到本地暂存文件再后台传输）"""
+    if storage_service.is_remote(point):
+        transfer_service.enqueue_store(
+            point, storage_key, transfer_service.stage_stream(stream))
+    else:
+        storage_service.write_stream(point, storage_key, stream)
 
 
 def get_dir_by_id(user: User, parent_id):
@@ -143,7 +165,7 @@ def save_uploaded_file(user: User, parent_id, filename, size, file_obj, md5=None
     storage_key = gen_storage_key(ext)
 
     point = _pick_point(size)
-    storage_service.write_stream(point, storage_key, file_obj.stream)
+    _store_stream(point, storage_key, file_obj.stream)
 
     f = File(
         user_id=user.id,
@@ -169,7 +191,7 @@ def save_chunked_file(user: User, parent_id, filename, total_size, tmp_path, md5
     ext = os.path.splitext(filename)[1]
     storage_key = gen_storage_key(ext)
     point = _pick_point(total_size)
-    storage_service.write_from_path(point, storage_key, tmp_path, move=True)
+    _store_path(point, storage_key, tmp_path, move=True)
 
     f = File(
         user_id=user.id,
@@ -472,12 +494,7 @@ def _zip_name_for(nodes, name=None) -> str:
 def compress(user: User, file_ids, parent_id=None, name=None) -> File:
     """把选中的文件/文件夹压缩为一个 zip 存入网盘"""
     parent = get_dir_by_id(user, parent_id)
-    nodes = []
-    for fid in file_ids:
-        try:
-            nodes.append(_get_owned_file(user, fid))
-        except (PermissionError, TypeError, ValueError):
-            continue
+    nodes = owned_files(user, file_ids)
     if not nodes:
         raise ValueError("未选择可压缩的文件")
 
@@ -504,7 +521,7 @@ def compress(user: User, file_ids, parent_id=None, name=None) -> File:
         size = os.path.getsize(tmp_path)
         check_upload(user, size)
         point = _pick_point(size)
-        storage_service.write_from_path(point, storage_key, tmp_path, move=True)
+        _store_path(point, storage_key, tmp_path, move=True)
     except Exception:
         _remove_quietly(tmp_path)
         if point is not None:
@@ -581,7 +598,7 @@ def _write_extracted(user: User, parent, name: str, src, limit: int):
                     raise QuotaError("解压后体积超出可用额度（上限为您的单文件/容量限制）")
                 out.write(chunk)
         point = _pick_point(size)
-        storage_service.write_from_path(point, storage_key, tmp_path, move=True)
+        _store_path(point, storage_key, tmp_path, move=True)
     except Exception:
         _remove_quietly(tmp_path)
         if point is not None:
@@ -681,6 +698,65 @@ def get_owned_file(user: User, file_id) -> File:
     return _get_owned_file(user, file_id)
 
 
+def owned_files(user: User, file_ids) -> list:
+    """按 id 批量取出当前用户可操作的文件（忽略无效 / 越权的 id）"""
+    out = []
+    for fid in file_ids:
+        try:
+            out.append(_get_owned_file(user, fid))
+        except (PermissionError, TypeError, ValueError):
+            continue
+    return out
+
+
 def get_physical_path(storage_key: str, storage_id=None) -> str:
     """返回可直接读取的本地路径（FTP 存储点会先拉取到本地缓存）"""
     return storage_service.read_path(storage_service.get_point(storage_id), storage_key)
+
+
+# ---------- 远端取回（下载/预览前先把文件准备好） ----------
+
+def local_path_or_pending(node):
+    """返回 (path, task)
+
+    path 非空 = 文件已在本地可直接读取；path 为空且 task 非空 = 远端文件已入队
+    后台取回，调用方应展示进度页等待；两者皆空 = 本地存储点上的实体确实不存在。
+    """
+    return transfer_service.ensure_local(_node_point(node), node.storage_key)
+
+
+def cached_local_path(node):
+    """仅返回已在本地的路径（含正在上传中的暂存文件），不发起取回"""
+    point = _node_point(node)
+    path = storage_service.cached_path(point, node.storage_key)
+    if path:
+        return path
+    return transfer_service.staged_path(point, node.storage_key)
+
+
+def walk_files(node):
+    """递归展开节点下的全部文件（不含目录本身与已丢失文件）"""
+    out, stack = [], [node]
+    while stack:
+        cur = stack.pop()
+        if cur.is_dir:
+            stack.extend(active_children(cur))
+        elif not cur.is_lost:
+            out.append(cur)
+    return out
+
+
+def prefetch_files(nodes) -> list:
+    """批量预取节点下的远端文件，返回仍需等待的任务 token 列表
+
+    本地文件与已命中缓存的文件不产生任务；未命中的远端文件入队后台取回，
+    调用方拿到非空 token 列表时先展示进度页，全部就绪后再打包/下载。
+    """
+    tokens, seen = [], set()
+    for node in nodes:
+        for f in walk_files(node):
+            _path, task = local_path_or_pending(f)
+            if task is not None and task.token not in seen:
+                seen.add(task.token)
+                tokens.append(task.token)
+    return tokens

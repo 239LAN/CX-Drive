@@ -71,6 +71,10 @@
                         {% else %}
                         <span class="badge bg-secondary">停用</span>
                         {% endif %}
+                        {% if not p.healthy %}
+                        <span class="badge bg-danger"
+                              title="{{ p.health_error or '读写失败，已自动摘除，暂不写入新文件' }}（检测于 {{ p.last_health_at.strftime('%Y-%m-%d %H:%M') if p.last_health_at else '-' }}）">连接异常</span>
+                        {% endif %}
                     </td>
                     <td>
                         <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#pointModal"

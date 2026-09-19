@@ -38,6 +38,7 @@ def create_app(config_class=Config):
     from app.routes.billing import billing_bp
     from app.routes.admin import admin_bp
     from app.routes.remote import remote_bp
+    from app.routes.transfer import transfer_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(files_bp)
@@ -46,6 +47,7 @@ def create_app(config_class=Config):
     app.register_blueprint(billing_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(remote_bp)
+    app.register_blueprint(transfer_bp)
 
     # 首页
     from app.routes.main import main_bp
@@ -102,6 +104,11 @@ def create_app(config_class=Config):
     if env_get("DISABLE_BG") != "1" and app.config["ENABLE_REMOTE"]:
         from app.services import remote_service
         remote_service.start_worker(app)
+
+    # 后台远端传输 Worker：取回/上传与是否启用远程下载无关，只要有远端存储点就需要
+    if env_get("DISABLE_BG") != "1":
+        from app.services import transfer_service
+        transfer_service.start_worker(app)
 
     return app
 
@@ -162,6 +169,10 @@ def _migrate_storage_points():
             ("secret_key", "VARCHAR(256)"),
             ("region", "VARCHAR(64)"),
             ("path_style", "BOOLEAN NOT NULL DEFAULT 0"),
+            # 1.3.3 起记录存储点健康状态，读写失败自动摘除
+            ("healthy", "BOOLEAN NOT NULL DEFAULT 1"),
+            ("health_error", "VARCHAR(256)"),
+            ("last_health_at", "DATETIME"),
         ):
             if name not in columns:
                 stmts.append(f"ALTER TABLE storage_points ADD COLUMN {name} {ddl}")

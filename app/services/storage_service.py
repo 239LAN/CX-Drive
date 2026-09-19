@@ -7,21 +7,24 @@
 - s3：S3 兼容对象存储（MinIO / OSS 等，支持自定义 Endpoint）
 
 远端存储点（ftp/sftp/s3）读取时先拉取到本地缓存再响应，缓存由后台任务按 TTL 清理。
+传输本身通过 ProgressCallback 上报进度，供后台任务写入数据库、前端轮询展示。
 
 容量规则：每个存储点必填容量上限，可用空间按容量的 90% 计（占用达 90% 即视为已满）。
 写入时在「空间足够的可用存储点」中选择占用率最低者，使各点占用率趋于平均。
+读写失败的存储点会被标记为不健康并暂停被选为写入点，恢复后由定时任务自动回归。
 """
 import ftplib
 import os
 import shutil
-import tempfile
 import time
 from datetime import timedelta
+from typing import Callable
 
 from flask import current_app
+from sqlalchemy import update as sa_update
 
 from app.extensions import db
-from app.models import File, StoragePoint
+from app.models import File, StoragePoint, TransferTask
 from app.utils.helpers import read_file_head, utcnow
 
 # 占用率达该比例即视为已满，同时作为可用空间计算基准
@@ -38,6 +41,11 @@ STORAGE_KINDS = ("local", "ftp", "sftp", "s3")
 FALLBACK_CAPACITY = 10 * 1024 ** 3
 # 最小容量限制（1MB），避免误填导致无法写入
 MIN_CAPACITY = 1024 ** 2
+# 传输分块大小（1MB）：读一块上报一次进度，避免回调过于频繁
+TRANSFER_CHUNK = 1024 * 1024
+
+# 进度回调：on_progress(已传输字节数, 总字节数)，总字节数未知时为 0
+ProgressCallback = Callable[[int, int], None]
 
 
 class StorageError(Exception):
@@ -148,7 +156,9 @@ class Allocator:
         self.reserved = {}
 
     def candidates(self):
-        return [p for p in enabled_points() if p.id not in self.exclude]
+        """可写存储点：启用 + 健康 + 未被排除"""
+        return [p for p in enabled_points()
+                if p.id not in self.exclude and p.healthy]
 
     def pick(self, need_bytes: int = 0):
         """选出「能装下且占用率最低」的可用存储点"""
@@ -163,6 +173,8 @@ class Allocator:
             if best is None or ratio < best_ratio:
                 best, best_ratio = point, ratio
         if best is None:
+            if not self.candidates():
+                raise StorageFullError("没有可用的存储点（已停用或异常摘除）")
             raise StorageFullError("没有可用的存储点空间")
         self.reserved[best.id] = self.reserved.get(best.id, 0) + need
         return best
@@ -193,12 +205,78 @@ def _cache_path(point, storage_key: str, create: bool = True) -> str:
     return os.path.join(d, storage_key)
 
 
+def _part_path(cached: str) -> str:
+    """中转文件路径：先写 .part，完整拿到后才 os.replace 成缓存文件"""
+    return cached + ".part"
+
+
+def _touch(cached: str) -> str:
+    """命中缓存时续期 mtime，让热文件不被 TTL 清掉（缓存天然按 LRU 淘汰）"""
+    try:
+        os.utime(cached, None)
+    except OSError:
+        pass
+    return cached
+
+
 def _remove_quietly(path: str):
     if path and os.path.exists(path):
         try:
             os.remove(path)
         except OSError:
             pass
+
+
+def _copy_stream(src, dst, total: int = 0,
+                 on_progress: ProgressCallback = None) -> int:
+    """分块拷贝并上报进度，返回拷贝字节数"""
+    done = 0
+    while True:
+        chunk = src.read(TRANSFER_CHUNK)
+        if not chunk:
+            break
+        dst.write(chunk)
+        done += len(chunk)
+        if on_progress:
+            on_progress(done, int(total or 0))
+    return done
+
+
+class _ProgressWriter:
+    """把「写文件」包装成可回调的函数（FTP retrbinary 按块调用）"""
+
+    def __init__(self, fh, total: int = 0, on_progress: ProgressCallback = None):
+        self._fh = fh
+        self._total = int(total or 0)
+        self._on_progress = on_progress
+        self.done = 0
+
+    def __call__(self, chunk: bytes):
+        self._fh.write(chunk)
+        self.done += len(chunk)
+        if self._on_progress:
+            self._on_progress(self.done, self._total)
+
+
+class _CountingReader:
+    """统计被读走字节数的流包装（S3 上传无法拿到回调时用）"""
+
+    def __init__(self, fh, total: int = 0, on_progress: ProgressCallback = None):
+        self._fh = fh
+        self._total = int(total or 0)
+        self._on_progress = on_progress
+        self.done = 0
+
+    def __getattr__(self, name):
+        return getattr(self._fh, name)
+
+    def read(self, size=-1):
+        data = self._fh.read(size)
+        if data:
+            self.done += len(data)
+            if self._on_progress:
+                self._on_progress(self.done, self._total)
+        return data
 
 
 def _ftp_connect(point) -> ftplib.FTP:
@@ -255,17 +333,23 @@ def _ftp_makedirs(conn, dirpath: str):
             pass
 
 
-def _ftp_fetch(point, storage_key: str) -> str:
-    """把 FTP 上的文件拉取到本地缓存并返回缓存路径"""
+def _ftp_fetch(point, storage_key: str,
+               on_progress: ProgressCallback = None) -> str:
+    """把 FTP 上的文件拉取到本地缓存并返回缓存路径（可按块上报进度）"""
     cached = _cache_path(point, storage_key)
     if os.path.exists(cached):
-        return cached
+        return _touch(cached)
+    tmp = _part_path(cached)
     conn = _ftp_connect(point)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(cached), suffix=".part")
-    os.close(fd)
     try:
+        remote = _ftp_path(point, storage_key)
+        total = 0
+        try:
+            total = int(conn.size(remote) or 0)
+        except FTP_ERRORS:
+            total = 0  # 部分服务器不支持 SIZE，进度按总量未知处理
         with open(tmp, "wb") as out:
-            conn.retrbinary("RETR " + _ftp_path(point, storage_key), out.write)
+            conn.retrbinary("RETR " + remote, _ProgressWriter(out, total, on_progress))
         os.replace(tmp, cached)
         return cached
     except FTP_ERRORS as e:
@@ -275,11 +359,24 @@ def _ftp_fetch(point, storage_key: str) -> str:
         _ftp_close(conn)
 
 
-def _ftp_store(point, storage_key: str, stream):
+def _ftp_store(point, storage_key: str, stream, size: int = 0,
+               on_progress: ProgressCallback = None):
     conn = _ftp_connect(point)
     try:
         _ftp_makedirs(conn, _ftp_dir(point, storage_key))
-        conn.storbinary("STOR " + _ftp_path(point, storage_key), stream)
+        if hasattr(stream, "seek"):
+            stream.seek(0)
+        total = int(size or 0)
+        done = 0
+
+        def _tick(block):
+            nonlocal done
+            done += len(block)
+            if on_progress:
+                on_progress(done, total)
+
+        conn.storbinary("STOR " + _ftp_path(point, storage_key), stream,
+                        callback=_tick if on_progress else None)
     except FTP_ERRORS as e:
         raise StorageError(f"FTP 写入失败：{e}")
     finally:
@@ -368,18 +465,19 @@ def _sftp_makedirs(sftp, dirpath: str):
                 pass
 
 
-def _sftp_fetch(point, storage_key: str) -> str:
-    """把 SFTP 上的文件拉取到本地缓存并返回缓存路径"""
+def _sftp_fetch(point, storage_key: str,
+                on_progress: ProgressCallback = None) -> str:
+    """把 SFTP 上的文件拉取到本地缓存并返回缓存路径（可按块上报进度）"""
     cached = _cache_path(point, storage_key)
     if os.path.exists(cached):
-        return cached
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(cached), suffix=".part")
-    os.close(fd)
+        return _touch(cached)
+    tmp = _part_path(cached)
     client = _sftp_connect(point)
     try:
         sftp = client.open_sftp()
         try:
-            sftp.get(_sftp_path(point, storage_key), tmp)
+            # paramiko 的 callback(已传输字节数, 总字节数) 与我们的签名一致
+            sftp.get(_sftp_path(point, storage_key), tmp, callback=on_progress)
         finally:
             sftp.close()
         os.replace(tmp, cached)
@@ -407,7 +505,8 @@ def _sftp_head(point, storage_key: str, length: int) -> bytes:
         _sftp_close(client)
 
 
-def _sftp_store(point, storage_key: str, stream):
+def _sftp_store(point, storage_key: str, stream, size: int = 0,
+                on_progress: ProgressCallback = None):
     client = _sftp_connect(point)
     try:
         sftp = client.open_sftp()
@@ -416,7 +515,7 @@ def _sftp_store(point, storage_key: str, stream):
             if hasattr(stream, "seek"):
                 stream.seek(0)
             with sftp.open(_sftp_path(point, storage_key), "wb") as remote:
-                shutil.copyfileobj(stream, remote)
+                _copy_stream(stream, remote, size, on_progress)
         finally:
             sftp.close()
     except Exception as e:  # noqa: BLE001
@@ -497,16 +596,24 @@ def _s3_key(point, storage_key: str) -> str:
     return f"{prefix}/{sub}/{storage_key}" if prefix else f"{sub}/{storage_key}"
 
 
-def _s3_fetch(point, storage_key: str) -> str:
-    """把 S3 对象下载到本地缓存并返回缓存路径"""
+def _s3_fetch(point, storage_key: str,
+              on_progress: ProgressCallback = None) -> str:
+    """把 S3 对象下载到本地缓存并返回缓存路径（分块读取以便上报进度）"""
     cached = _cache_path(point, storage_key)
     if os.path.exists(cached):
-        return cached
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(cached), suffix=".part")
-    os.close(fd)
+        return _touch(cached)
+    tmp = _part_path(cached)
     try:
         client = _s3_client(point)
-        client.download_file(_s3_bucket(point), _s3_key(point, storage_key), tmp)
+        resp = client.get_object(
+            Bucket=_s3_bucket(point), Key=_s3_key(point, storage_key))
+        body = resp["Body"]
+        total = int(resp.get("ContentLength") or 0)
+        try:
+            with open(tmp, "wb") as out:
+                _copy_stream(body, out, total, on_progress)
+        finally:
+            body.close()
         os.replace(tmp, cached)
         return cached
     except StorageError:
@@ -537,12 +644,14 @@ def _s3_head(point, storage_key: str, length: int) -> bytes:
         raise StorageError(f"S3 读取失败：{e}")
 
 
-def _s3_store(point, storage_key: str, stream):
+def _s3_store(point, storage_key: str, stream, size: int = 0,
+              on_progress: ProgressCallback = None):
     try:
         client = _s3_client(point)
         if hasattr(stream, "seek"):
             stream.seek(0)
-        client.upload_fileobj(stream, _s3_bucket(point), _s3_key(point, storage_key))
+        body = _CountingReader(stream, size, on_progress) if on_progress else stream
+        client.upload_fileobj(body, _s3_bucket(point), _s3_key(point, storage_key))
     except StorageError:
         raise
     except Exception as e:  # noqa: BLE001
@@ -568,20 +677,108 @@ def _s3_exists(point, storage_key: str) -> bool:
         return False
 
 
+# ---------------- 存储点健康状态 ----------------
+
+def _set_health(point, healthy: bool, error: str = None):
+    """落库健康状态
+
+    走独立连接更新，避免把调用方尚未提交的事务（如刚插入的文件记录）一起提交。
+    """
+    now = utcnow()
+    try:
+        with db.engine.begin() as conn:
+            conn.execute(
+                sa_update(StoragePoint).where(StoragePoint.id == point.id).values(
+                    healthy=bool(healthy), health_error=error, last_health_at=now))
+    except Exception:  # noqa: BLE001 —— 健康标记失败不影响主流程
+        return
+    point.healthy = bool(healthy)
+    point.health_error = error
+    point.last_health_at = now
+
+
+def mark_healthy(point):
+    """读写成功：恢复健康（本来就是健康状态时不写库）"""
+    if point is None or point.kind == "local":
+        return
+    if point.healthy and not point.health_error:
+        return
+    _set_health(point, True, None)
+
+
+def mark_unhealthy(point, error: str):
+    """读写失败：摘除该点，不再被选为写入点，等定时任务巡检回归"""
+    if point is None or point.kind == "local":
+        return
+    reason = (str(error or "").strip() or "未知错误")[:250]
+    if not point.healthy and point.health_error == reason:
+        return
+    _set_health(point, False, reason)
+
+
+def health_check_all() -> dict:
+    """巡检所有远端存储点：掉线的摘除、恢复的回归（由定时任务调用）"""
+    result = {"checked": 0, "failed": 0, "recovered": 0}
+    for point in StoragePoint.query.filter(StoragePoint.kind != "local").all():
+        err = test_connection(point)
+        result["checked"] += 1
+        if err:
+            if point.healthy:
+                result["failed"] += 1
+            mark_unhealthy(point, err)
+        else:
+            if not point.healthy:
+                result["recovered"] += 1
+            mark_healthy(point)
+    return result
+
+
 # ---------------- 统一读写接口 ----------------
 
-def read_path(point, storage_key: str) -> str:
-    """返回可直接读取的本地路径；远端存储点会先拉取到本地缓存"""
+def read_path(point, storage_key: str,
+              on_progress: ProgressCallback = None) -> str:
+    """返回可直接读取的本地路径
+
+    远端存储点会先拉取到本地缓存：命中缓存直接返回并续期，未命中的全过程
+    按块回调 on_progress，供后台任务写库、前端轮询。
+    """
     point = get_point(point.id if point is not None else None)
     if point is None:
         raise StorageError("尚未配置存储点")
     if point.kind == "local":
         return _local_path(point, storage_key)
-    if point.kind == "sftp":
-        return _sftp_fetch(point, storage_key)
-    if point.kind == "s3":
-        return _s3_fetch(point, storage_key)
-    return _ftp_fetch(point, storage_key)
+    try:
+        if point.kind == "sftp":
+            path = _sftp_fetch(point, storage_key, on_progress)
+        elif point.kind == "s3":
+            path = _s3_fetch(point, storage_key, on_progress)
+        else:
+            path = _ftp_fetch(point, storage_key, on_progress)
+    except StorageError as e:
+        mark_unhealthy(point, str(e))
+        raise
+    mark_healthy(point)
+    return path
+
+
+def is_remote(point) -> bool:
+    """是否远端存储点（读写需要网络传输，应放到后台任务执行）"""
+    return bool(point is not None and point.kind != "local")
+
+
+def cached_path(point, storage_key: str):
+    """文件已在本地可直接读取时返回其路径，否则返回 None（不发起拉取）
+
+    命中缓存时续期 mtime，避免热文件被 TTL 清掉。
+    """
+    point = get_point(point.id if point is not None else None)
+    if point is None:
+        return None
+    if point.kind == "local":
+        path = _local_path(point, storage_key)
+        return path if os.path.exists(path) else None
+    cached = _cache_path(point, storage_key, create=False)
+    return _touch(cached) if os.path.exists(cached) else None
 
 
 def read_head(point, storage_key: str, length: int) -> bytes:
@@ -618,23 +815,32 @@ def read_head(point, storage_key: str, length: int) -> bytes:
         _ftp_close(conn)
 
 
-def write_stream(point, storage_key: str, stream):
-    """把文件流写入存储点（stream 需位于起始位置）"""
+def write_stream(point, storage_key: str, stream, size: int = 0,
+                 on_progress: ProgressCallback = None):
+    """把文件流写入存储点（stream 需位于起始位置）
+
+    远端存储点的上传耗时较长，可传 on_progress 与 size 以按块上报进度。
+    """
     if point.kind == "local":
         dest = _local_path(point, storage_key)
         with open(dest, "wb") as out:
-            shutil.copyfileobj(stream, out)
+            _copy_stream(stream, out, size, on_progress)
         return
-    if point.kind == "sftp":
-        _sftp_store(point, storage_key, stream)
-        return
-    if point.kind == "s3":
-        _s3_store(point, storage_key, stream)
-        return
-    _ftp_store(point, storage_key, stream)
+    try:
+        if point.kind == "sftp":
+            _sftp_store(point, storage_key, stream, size, on_progress)
+        elif point.kind == "s3":
+            _s3_store(point, storage_key, stream, size, on_progress)
+        else:
+            _ftp_store(point, storage_key, stream, size, on_progress)
+    except StorageError as e:
+        mark_unhealthy(point, str(e))
+        raise
+    mark_healthy(point)
 
 
-def write_from_path(point, storage_key: str, src_path: str, move: bool = True):
+def write_from_path(point, storage_key: str, src_path: str, move: bool = True,
+                    on_progress: ProgressCallback = None):
     """把本地文件写入存储点；move=True 时写入后删除源文件"""
     if point.kind == "local":
         dest = _local_path(point, storage_key)
@@ -645,8 +851,12 @@ def write_from_path(point, storage_key: str, src_path: str, move: bool = True):
         else:
             shutil.copy2(src_path, dest)
         return
+    try:
+        size = int(os.path.getsize(src_path))
+    except OSError:
+        size = 0
     with open(src_path, "rb") as fh:
-        write_stream(point, storage_key, fh)
+        write_stream(point, storage_key, fh, size, on_progress)
     if move:
         _remove_quietly(src_path)
 
@@ -852,21 +1062,72 @@ def test_connection(point) -> str:
         _ftp_close(conn)
 
 
-def clean_cache(ttl: int = None) -> int:
-    """清理超过 TTL 的远端存储点本地缓存，返回删除文件数"""
+def active_transfer_keys() -> set:
+    """正在传输中的 (存储点 id, storage_key) 集合，缓存清理时必须跳过"""
+    try:
+        rows = db.session.query(
+            TransferTask.point_id, TransferTask.storage_key
+        ).filter(TransferTask.status.in_(("queued", "running"))).all()
+    except Exception:  # noqa: BLE001
+        return set()
+    return {(int(row[0]), row[1]) for row in rows}
+
+
+def _cache_key_of(root: str, path: str):
+    """从缓存文件路径反推 (存储点 id, storage_key)；目录结构不符时返回 None"""
+    rel = os.path.relpath(path, root).replace(os.sep, "/")
+    parts = rel.split("/")
+    if len(parts) != 3:
+        return None
+    try:
+        point_id = int(parts[0])
+    except ValueError:
+        return None
+    name = parts[2]
+    if name.endswith(".part"):
+        name = name[:-5]
+    return point_id, name
+
+
+def clean_cache(ttl: int = None, max_bytes: int = None) -> int:
+    """清理远端存储点本地缓存，返回删除文件数
+
+    先按 TTL 删除过期文件（命中缓存的读取会续期 mtime，因此热文件不会过期），
+    再按 LRU 淘汰把缓存总量压到 STORAGE_CACHE_MAX_BYTES 以内。
+    正在取回 / 上传中的任务文件（含 .part 中转文件）不会被删除。
+    """
     root = current_app.config["STORAGE_CACHE_ROOT"]
     if not root or not os.path.isdir(root):
         return 0
     ttl = int(ttl or current_app.config.get("STORAGE_CACHE_TTL") or 3600)
+    if max_bytes is None:
+        max_bytes = int(current_app.config.get("STORAGE_CACHE_MAX_BYTES") or 0)
     cutoff = time.time() - ttl
+    protected = active_transfer_keys()
+    kept = []  # (mtime, size, path)
     removed = 0
     for dirpath, _dirs, names in os.walk(root):
         for name in names:
-            p = os.path.join(dirpath, name)
+            path = os.path.join(dirpath, name)
             try:
-                if os.path.getmtime(p) < cutoff:
-                    os.remove(p)
-                    removed += 1
+                st = os.stat(path)
             except OSError:
                 continue
+            key = _cache_key_of(root, path)
+            if key is not None and key in protected:
+                continue  # 交给传输任务自己收尾，避免删掉正在使用的文件
+            if st.st_mtime < cutoff:
+                _remove_quietly(path)
+                removed += 1
+                continue
+            kept.append((st.st_mtime, st.st_size, path))
+    if max_bytes > 0:
+        total = sum(item[1] for item in kept)
+        for _mtime, size, path in sorted(kept):  # 最久未访问的优先淘汰
+            if total <= max_bytes:
+                break
+            _remove_quietly(path)
+            if not os.path.exists(path):
+                total -= size
+                removed += 1
     return removed

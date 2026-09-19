@@ -59,11 +59,19 @@ def hard_delete_locked_users():
 
 
 def clean_storage_cache():
-    """清理超期的 FTP 本地缓存文件"""
+    """清理超期 / 超量的本地缓存文件"""
     try:
         storage_service.clean_cache()
     except OSError:
         pass
+
+
+def check_storage_health():
+    """巡检远端存储点：掉线的摘除（不再被选为写入点），恢复的自动回归"""
+    try:
+        storage_service.health_check_all()
+    except Exception:  # noqa: BLE001 —— 巡检失败不影响其余维护任务
+        db.session.rollback()
 
 
 def purge_lost_files():
@@ -77,6 +85,7 @@ def run_all():
     expire_addons()
     hard_delete_locked_users()
     clean_storage_cache()
+    check_storage_health()
     purge_lost_files()
 
 
